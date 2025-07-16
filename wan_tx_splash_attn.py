@@ -47,6 +47,9 @@ import traceback
 import types
 import argparse
 
+
+from ringattention_pallas_tpu import ring_flash_attention_tpu
+
 #### SETTINGS
 # 1.3B
 # MODEL_ID = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
@@ -89,6 +92,8 @@ LOGICAL_AXIS_RULES = (
                   )
 
 USE_K_SMOOTH = True
+
+USE_RING_ATTENTION = False
 
 ####
 
@@ -412,6 +417,55 @@ def _tpu_splash_attention(query, key, value, env, scale=None, is_causal=False, w
     return out
 
 
+def _tpu_ring_attention(query, key, value, env):
+  def wrap_ring_attention(query, key, value):
+    attn_bias = None
+    segment_ids = None
+    cache_idx = None
+    axis_name = ('axis','sp',)
+    float32_logits = True
+    blockwise_kwargs = {
+       'query_chunk_size': 1024,
+       'key_chunk_size': 1024,
+       'causal_block_size': None,
+    }
+
+    def pad_to_multiple(x, multiple, axis):
+        seq_len = x.shape[axis]
+        pad_len = (multiple - seq_len % multiple) % multiple
+        if pad_len == 0:
+            return x, seq_len
+        pad_width = [(0, 0)] * x.ndim
+        pad_width[axis] = (0, pad_len)
+        return jnp.pad(x, pad_width), seq_len
+    
+    q_padded, q_orig_len = pad_to_multiple(query, BQSIZE, axis=2)
+    k_padded, k_orig_len = pad_to_multiple(key, BKVSIZE, axis=2)
+    v_padded, v_orig_len = pad_to_multiple(value, BKVSIZE, axis=2)
+
+    q_padded = jnp.swapaxes(q_padded, 1, 2)
+    k_padded = jnp.swapaxes(k_padded, 1, 2)
+    v_padded = jnp.swapaxes(v_padded, 1, 2)
+    res = ring_flash_attention_tpu(q_padded, k_padded, v_padded, attn_bias, segment_ids, cache_idx, axis_name, float32_logits, blockwise_kwargs)[0].astype(query.dtype)
+    # batch size is squeezed for some reason
+    if len(res.shape) < 4:
+       res = res[None, ...]
+    res = res[:, :q_orig_len, :, :]
+    res = jnp.swapaxes(res, 1, 2)
+    return res
+
+  
+  wrap_ring_attention = shard_map(
+      wrap_ring_attention,
+      mesh=env._mesh,
+      in_specs=(P('dp', None, (axis, 'sp'), None), P('dp', None, (axis, 'sp'), None), P('dp', None, (axis, 'sp'), None)),
+      out_specs=P('dp', None, (axis, 'sp'), None),
+      check_rep=False,
+  )
+  
+  return wrap_ring_attention(query, key, value)
+   
+
 # <--- MODIFIED: Added window_size parameter to the function signature --->
 def scaled_dot_product_attention(
     query,
@@ -442,7 +496,11 @@ def scaled_dot_product_attention(
       # jkey_smoothed
       jkey = jkey - key_mean
     # <--- MODIFIED: Pass window_size to the backend function --->
-    res = _tpu_splash_attention(jquery, jkey, jvalue, env, scale=scale, is_causal=is_causal, window_size=window_size)
+    # Only use ring attention in self attention
+    if jkey.shape[2] > 10000 and USE_RING_ATTENTION:
+      res = _tpu_ring_attention(jquery, jkey, jvalue, env)
+    else:
+      res = _tpu_splash_attention(jquery, jkey, jvalue, env, scale=scale, is_causal=is_causal, window_size=window_size)
     return env.j2t_iso(res)
 
   #print(f"[DEBUG] Using reference implementation (fallback)")
@@ -947,6 +1005,7 @@ def parse_args():
     parser.add_argument("--profile", action="store_true", default=False, help="Add profiler")
     parser.add_argument("--use_fsdp", type=bool, default=USE_FSDP, help="Use FSDP")
     parser.add_argument("--use_k_smooth", type=bool, default=USE_K_SMOOTH, help="Use K smooth")
+    parser.add_argument("--use_ring_attention", type=bool, default=USE_RING_ATTENTION, help="Use ring attention")
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -956,4 +1015,5 @@ if __name__ == '__main__':
   BKVSIZE = args.bkvsize
   BKVCOMPUTESIZE = args.bkvcomputesize
   USE_K_SMOOTH = args.use_k_smooth
+  USE_RING_ATTENTION = args.use_ring_attention
   main()
