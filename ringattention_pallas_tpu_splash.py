@@ -675,6 +675,39 @@ def _apply_mask_and_soft_cap(
     qk = cap_logits(qk)
   return qk
 
+def local_barrier(left_neighbor, right_neighbor, double_barrier=True):
+  """Performs a barrier with neighbors on the global barrier semaphore.
+
+  Optionally performs a second barrier, which prevents a potential race
+  when reusing the same collective_id across kernel invocations.
+  """
+  barrier_sem = pltpu.get_barrier_semaphore()
+  for neighbor in [left_neighbor, right_neighbor]:
+    pltpu.semaphore_signal(
+      barrier_sem,
+      inc=1,
+      device_id=(neighbor,),
+      device_id_type=pltpu.DeviceIdType.MESH,
+    )
+  pltpu.semaphore_wait(barrier_sem, 2)
+  if double_barrier:
+    # The double-barrier prevents a race condition where one neighbor can
+    # re-enter the kernel again on a subsequent call and increment the
+    # barrier semaphore a second time. This would unblock the current device
+    # even if the other neighbor is not ready yet.
+    # To implement a double-barrier, we stack-allocate a second REGULAR
+    # semaphore using run_scoped.
+    @functools.partial(pl.run_scoped,
+                       second_barrier=pltpu.SemaphoreType.REGULAR)
+    def _(second_barrier):
+      for neighbor in [left_neighbor, right_neighbor]:
+        pltpu.semaphore_signal(
+          second_barrier,
+          inc=1,
+          device_id=(neighbor,),
+          device_id_type=pltpu.DeviceIdType.MESH,
+        )
+      pltpu.semaphore_wait(second_barrier, 2)
 
 def flash_attention_kernel(
     # Prefetched inputs
@@ -694,7 +727,13 @@ def flash_attention_kernel(
     l_scratch_ref,
     o_scratch_ref,
     o_ref,
-    logsumexp_ref=None,
+    k_scratch_ref,
+    v_scratch_ref,
+    logsumexp_ref,
+    # Scratch
+    remote_send_sem,
+    remote_recv_sem,
+    capacity_sem,
     *,
     mask_value: float,
     grid_width: int,
@@ -707,6 +746,8 @@ def flash_attention_kernel(
     v_layout: QKVLayout,
     attn_logits_soft_cap: float | None,
     mask_function: MaskFunctionType | None,
+    axis_name: Any,
+    axis_size: int,
 ):
   float32 = jnp.float32
   HEAD_DIM_MINOR = QKVLayout.HEAD_DIM_MINOR
@@ -718,8 +759,51 @@ def flash_attention_kernel(
     )
 
   h, i, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
+  axis_i = pl.program_id(3)
 
-  @pl.when(j == 0)
+  working_slot = lax.rem(axis_i, 2)
+  receiving_slot = 1 - working_slot
+  my_id = lax.axis_index(axis_name)
+  right_neighbor = (lax.rem(my_id + 1, axis_size),0,0)
+  left_neighbor = (lax.rem(my_id - 1 + axis_size, axis_size),0,0)
+  @pl.when((h == 0) & (i == 0) & (j == 0) & (axis_i == 0))
+  def _():
+    local_barrier(left_neighbor, right_neighbor)
+
+  # YYY: could be reference not copy?
+  @pl.when(axis_i == 0)
+  def _():
+    k_scratch_ref[working_slot] = k_ref[...]
+    v_scratch_ref[working_slot] = v_ref[...]
+
+  pltpu.semaphore_signal(
+      capacity_sem,
+      inc=1,
+      device_id=left_neighbor,
+      device_id_type=pltpu.DeviceIdType.MESH,
+  )
+  pltpu.semaphore_wait(capacity_sem, 1)
+
+  k_copy = pltpu.make_async_remote_copy(
+      src_ref=k_scratch_ref.at[working_slot],
+      dst_ref=k_scratch_ref.at[receiving_slot],
+      send_sem=remote_send_sem,
+      recv_sem=remote_recv_sem,
+      device_id=right_neighbor,
+      device_id_type=pltpu.DeviceIdType.MESH,
+  )
+  k_copy.start()
+  v_copy = pltpu.make_async_remote_copy(
+      src_ref=v_scratch_ref.at[working_slot],
+      dst_ref=v_scratch_ref.at[receiving_slot],
+      send_sem=remote_send_sem,
+      recv_sem=remote_recv_sem,
+      device_id=right_neighbor,
+      device_id_type=pltpu.DeviceIdType.MESH,
+  )
+  v_copy.start()
+
+  @pl.when((j == 0) & (axis_i == 0))
   def init():
     o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
     m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
@@ -743,9 +827,9 @@ def flash_attention_kernel(
     q = q_ref[...] if q_layout == HEAD_DIM_MINOR else q_ref[...].T
     qk_dims = NT_DIM_NUMBERS if k_layout == HEAD_DIM_MINOR else NN_DIM_NUMBERS
     if k_layout == HEAD_DIM_MINOR:
-      k = k_ref[slice_k, :]
+      k = k_scratch_ref.at[working_slot][slice_k, :]
     else:
-      k = k_ref[:, slice_k]
+      k = k_scratch_ref.at[working_slot][:, slice_k]
     qk = lax.dot_general(q, k, qk_dims, preferred_element_type=float32)
 
     assert qk.shape == (bq, bkv_compute)
@@ -794,9 +878,9 @@ def flash_attention_kernel(
 
     sv_dims = NN_DIM_NUMBERS if v_layout == HEAD_DIM_MINOR else NT_DIM_NUMBERS
     if v_layout == HEAD_DIM_MINOR:
-      v = v_ref[slice_k, :]
+      v = v_scratch_ref.at[working_slot][slice_k, :]
     else:
-      v = v_ref[:, slice_k]
+      v = v_scratch_ref.at[working_slot][:, slice_k]
     v = v.astype(float32)
     o_curr = lax.dot_general(s_curr, v, sv_dims)
 
@@ -811,7 +895,7 @@ def flash_attention_kernel(
     )
     lax.fori_loop(0, num_iters, body, None, unroll=True)
 
-  @pl.when(j == grid_width - 1)
+  @pl.when((j == grid_width - 1) & (axis_i == axis_size - 1))
   def end():
     l = l_scratch_ref[...]
     l_inv = pltpu.repeat(1.0 / l, head_dim_v_repeats, axis=1)
@@ -825,6 +909,9 @@ def flash_attention_kernel(
     m_scratch_ref[...] = jnp.zeros_like(m_scratch_ref)
     l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
     o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
+  
+  k_copy.wait()
+  v_copy.wait()
 
 
 @overload
@@ -885,6 +972,9 @@ def _splash_attention_forward(
     attn_logits_soft_cap: float | None = None,
     interpret: bool = False
 ) -> SplashCustomReturnType:
+  assert segment_ids is None, "Not correct handling segment ids."
+  assert mask_function is None, "Only full mask currently."
+
   num_q_heads, q_seq_len, head_dim_qk = q.shape
   head_dim_v = v.shape[-1]
   bq, bkv = block_sizes.block_q, block_sizes.block_kv
@@ -957,15 +1047,15 @@ def _splash_attention_forward(
       )
 
   q_layout = block_sizes.q_layout
-  def q_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
+  def q_index_map(h, i, j, axis_i, data_next_ref, block_mask_ref, mask_next_ref=None):
     del j, data_next_ref, mask_next_ref, block_mask_ref
     return from_head_minor((h, i, 0), q_layout)
-  def out_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
+  def out_index_map(h, i, j, axis_i, data_next_ref, block_mask_ref, mask_next_ref=None):
     del j, data_next_ref, mask_next_ref, block_mask_ref
     return h, i, 0
 
   k_layout = block_sizes.k_layout
-  def k_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
+  def k_index_map(h, i, j, axis_i, data_next_ref, block_mask_ref, mask_next_ref=None):
     next_j, *_ = _next_nonzero(
         h, i, j, data_next_ref, block_mask_ref, mask_next_ref
     )
@@ -973,14 +1063,14 @@ def _splash_attention_forward(
     return from_head_minor((*prefix, next_j, 0), k_layout)
 
   v_layout = block_sizes.v_layout
-  def v_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
+  def v_index_map(h, i, j, axis_i, data_next_ref, block_mask_ref, mask_next_ref=None):
     next_j, *_ = _next_nonzero(
         h, i, j, data_next_ref, block_mask_ref, mask_next_ref
     )
     prefix = () if is_mqa else (_div(h, q_heads_per_kv_head),)
     return from_head_minor((*prefix, next_j, 0), v_layout)
 
-  def mask_index_map(h, i, j, data_next_ref, block_mask_ref,
+  def mask_index_map(h, i, j, axis_i, data_next_ref, block_mask_ref,
                      mask_next_ref=None):
     _, next_m, *_ = _next_nonzero(
         h, i, j, data_next_ref, block_mask_ref, mask_next_ref
@@ -991,7 +1081,7 @@ def _splash_attention_forward(
     del h, j  # Unused.
     return i, 0
 
-  def kv_segment_ids_index_map(h, i, j, data_next_ref, block_mask_ref,
+  def kv_segment_ids_index_map(h, i, j, axis_i, data_next_ref, block_mask_ref,
                                mask_next_ref=None):
     next_j, *_ = _next_nonzero(
         h, i, j, data_next_ref, block_mask_ref, mask_next_ref
@@ -1057,6 +1147,8 @@ def _splash_attention_forward(
       jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # l_scratch
       jax.ShapeDtypeStruct((bq, head_dim_v), jnp.float32),  # o_scratch
       jax.ShapeDtypeStruct((num_q_heads, q_seq_len, head_dim_v), q.dtype),
+      jax.ShapeDtypeStruct((2, bkv, head_dim_qk), jnp.float32),  # k_scratch
+      jax.ShapeDtypeStruct((2, bkv, head_dim_v), jnp.float32),  # v_scratch
   ]
   out_specs = [
       # TODO(sharadmv): convert m/l to be scratch
@@ -1064,6 +1156,8 @@ def _splash_attention_forward(
       pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
       pl.BlockSpec((bq, head_dim_v), lambda h, i, j, *_: (0, 0)),
       pl.BlockSpec((None, bq, head_dim_v), out_index_map),
+      pl.BlockSpec(memory_space=pltpu.MemorySpace.VMEM),
+      pl.BlockSpec(memory_space=pltpu.MemorySpace.VMEM),
   ]
   if save_residuals:
     out_shapes += [
@@ -1095,7 +1189,11 @@ def _splash_attention_forward(
   else:
     grid_width = kv_seq_len // bkv
 
-  grid = (num_q_heads, q_seq_len // bq, grid_width)
+  # TODO: use paramerter axis_name
+  axis_name = ('axis', 'sp')
+  axis_size = lax.psum(1, axis_name)
+
+  grid = (num_q_heads, q_seq_len // bq, grid_width, axis_size)
   with jax.named_scope(kernel_name):
     all_out = pl.pallas_call(
         partial(
@@ -1111,15 +1209,22 @@ def _splash_attention_forward(
             v_layout=v_layout,
             attn_logits_soft_cap=attn_logits_soft_cap,
             mask_function=mask_function,
+            axis_name=axis_name,
+            axis_size=axis_size,
         ),
         grid_spec=pltpu.PrefetchScalarGridSpec(
             num_scalar_prefetch=num_scalar_prefetch,
             in_specs=in_specs,
             out_specs=out_specs,
             grid=grid,
+            scratch_shapes=(
+                [pltpu.SemaphoreType.DMA] * 2
+                + [pltpu.SemaphoreType.REGULAR]  # capacity_sem
+            ),
         ),
         compiler_params=pltpu.CompilerParams(
-          dimension_semantics=("parallel", "arbitrary", "arbitrary"),
+          dimension_semantics=("parallel", "arbitrary", "arbitrary", "arbitrary"),
+          collective_id=0,
         ),
         out_shape=out_shapes,
         name=kernel_name,
@@ -1142,6 +1247,8 @@ def _splash_attention_forward(
       _,
       _,
       out,
+      _,
+      _,
       logsumexp,
   ) = all_out
 
