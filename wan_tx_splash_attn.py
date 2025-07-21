@@ -48,7 +48,8 @@ import types
 import argparse
 
 
-from ringattention_pallas_tpu import ring_flash_attention_tpu
+# from ringattention_pallas_tpu import ring_flash_attention_tpu
+import ringattention_pallas_tpu_splash
 
 #### SETTINGS
 # 1.3B
@@ -69,8 +70,8 @@ FPS = 16
 NUM_STEP = 50
 # NUM_STEP = 1
 
-BQSIZE =  3024 # 2240 # 3024 #2520
-BKVSIZE = 2048
+BQSIZE =  2240 # 2240 # 3024 #2520
+BKVSIZE = 1024
 BKVCOMPUTESIZE = 1024
 
 # <--- NEW: Local Attention Window Size Setting --->
@@ -417,53 +418,104 @@ def _tpu_splash_attention(query, key, value, env, scale=None, is_causal=False, w
     return out
 
 
-def _tpu_ring_attention(query, key, value, env):
-  def wrap_ring_attention(query, key, value):
-    attn_bias = None
-    segment_ids = None
-    cache_idx = None
-    axis_name = ('axis','sp',)
-    float32_logits = True
-    blockwise_kwargs = {
-       'query_chunk_size': 1024,
-       'key_chunk_size': 1024,
-       'causal_block_size': None,
-    }
+def _tpu_ring_attention(query, key, value, env, scale=None, is_causal=False, window_size=None):
+    import jax
+    import math
+    mesh = env._mesh
+    num_heads = query.shape[1]
 
-    def pad_to_multiple(x, multiple, axis):
-        seq_len = x.shape[axis]
-        pad_len = (multiple - seq_len % multiple) % multiple
-        if pad_len == 0:
-            return x, seq_len
-        pad_width = [(0, 0)] * x.ndim
-        pad_width[axis] = (0, pad_len)
-        return jnp.pad(x, pad_width), seq_len
-    
-    q_padded, q_orig_len = pad_to_multiple(query, BQSIZE, axis=2)
-    k_padded, k_orig_len = pad_to_multiple(key, BKVSIZE, axis=2)
-    v_padded, v_orig_len = pad_to_multiple(value, BKVSIZE, axis=2)
+    # The function that will be sharded across devices.
+    def _attention_on_slices(q, k, v):
+        import jax.numpy as jnp
+        # Scale the query tensor. This happens on each device with its slice of data.
+        scale_factor = 1.0 / math.sqrt(q.shape[-1]) if scale is None else scale
+        q = q * scale_factor
 
-    q_padded = jnp.swapaxes(q_padded, 1, 2)
-    k_padded = jnp.swapaxes(k_padded, 1, 2)
-    v_padded = jnp.swapaxes(v_padded, 1, 2)
-    res = ring_flash_attention_tpu(q_padded, k_padded, v_padded, attn_bias, segment_ids, cache_idx, axis_name, float32_logits, blockwise_kwargs)[0].astype(query.dtype)
-    # batch size is squeezed for some reason
-    if len(res.shape) < 4:
-       res = res[None, ...]
-    res = res[:, :q_orig_len, :, :]
-    res = jnp.swapaxes(res, 1, 2)
-    return res
+        # Helper to pad to next multiple
+        def pad_to_multiple(x, multiple, axis):
+            seq_len = x.shape[axis]
+            pad_len = (multiple - seq_len % multiple) % multiple
+            if pad_len == 0:
+                return x, seq_len
+            pad_width = [(0, 0)] * x.ndim
+            pad_width[axis] = (0, pad_len)
+            return jnp.pad(x, pad_width), seq_len
 
-  
-  wrap_ring_attention = shard_map(
-      wrap_ring_attention,
-      mesh=env._mesh,
-      in_specs=(P('dp', None, (axis, 'sp'), None), P('dp', None, (axis, 'sp'), None), P('dp', None, (axis, 'sp'), None)),
-      out_specs=P('dp', None, (axis, 'sp'), None),
-      check_rep=False,
-  )
-  
-  return wrap_ring_attention(query, key, value)
+        # This function operates on a single item from the batch.
+        def kernel_3d(q_3d, k_3d, v_3d):
+            q_seq_len = q_3d.shape[1]
+            kv_seq_len = k_3d.shape[1]
+            num_heads_on_device = q_3d.shape[0]
+
+            # self attention
+            if k_3d.shape[1] > 10000 or True:
+              # Pad q, k, v to next multiple of BQSIZE/BKVSIZE
+              q_3d_padded, q_orig_len = pad_to_multiple(q_3d, BQSIZE, axis=1)
+              k_3d_padded, k_orig_len = pad_to_multiple(k_3d, BKVSIZE, axis=1)
+              v_3d_padded, v_orig_len = pad_to_multiple(v_3d, BKVSIZE, axis=1)
+            else:
+              # do not padding on kv in cross attention. kv length is 512
+              q_3d_padded, q_orig_len = pad_to_multiple(q_3d, BQSIZE, axis=1)
+              k_3d_padded, k_orig_len = k_3d, k_3d.shape[1]
+              v_3d_padded, v_orig_len = v_3d, v_3d.shape[1]
+
+            padded_q_seq_len = q_3d_padded.shape[1]
+            padded_kv_seq_len = k_3d_padded.shape[1]
+
+            # ======================= NEW MASK LOGIC =======================
+            if window_size is not None:
+                mask_class = functools.partial(splash_attention.LocalMask, window_size=window_size, offset=0)
+            else:
+                mask_class = splash_attention.FullMask
+
+            mask = splash_attention.MultiHeadMask(
+                [mask_class((padded_q_seq_len, padded_kv_seq_len)) for _ in range(num_heads_on_device)]
+            )
+            # =============================================================
+
+            block_sizes = splash_attention.BlockSizes(
+                block_q=min(BQSIZE, padded_q_seq_len),
+                block_kv=min(BKVSIZE, padded_kv_seq_len),
+                block_kv_compute=min(BKVCOMPUTESIZE, padded_kv_seq_len),
+            )
+            splash_kernel = ringattention_pallas_tpu_splash.make_splash_mha(
+                mask=mask, block_sizes=block_sizes, head_shards=1, q_seq_shards=1
+            )
+            out = splash_kernel(q_3d_padded.astype(jnp.float32), k_3d_padded.astype(jnp.float32), v_3d_padded.astype(jnp.float32)).astype(q_3d_padded.dtype)
+            # Remove padding if any
+            return out[:, :q_orig_len, ...]
+
+        # Map the kernel over the batch dimension.
+        vmapped_kernel = jax.vmap(kernel_3d, in_axes=(0, 0, 0), out_axes=0)
+        return vmapped_kernel(q, k, v)
+
+    # Determine the partitioning spec based on the number of heads.
+    if num_heads < mesh.size:
+        # Replicated case for VAE. All devices get the full tensor.
+        q_partition_spec = P()
+        kv_partition_spec = P()
+    else:
+        # Sharded case for Transformer. Split along the heads axis.
+        # Attn1 self attention, key length is long.
+        if key.shape[2] > 10000 and False:
+          q_partition_spec = P('dp', 'axis', 'sp', None)
+          kv_partition_spec = P('dp', 'axis', None, None)
+        else:
+          # Attn2 which is cross attention, kv sequence is shorter. All gather the key value cost less.
+          q_partition_spec = P('dp', None, ('axis', 'sp'), None)
+          kv_partition_spec = P('dp', None, ('axis', 'sp'), None)
+
+    # ALWAYS use shard_map. The partition_spec will control the behavior.
+    sharded_fn = shard_map(
+        _attention_on_slices,
+        mesh=mesh,
+        in_specs=(q_partition_spec, kv_partition_spec, kv_partition_spec),
+        out_specs=q_partition_spec,
+        check_rep=False,
+    )
+    out = sharded_fn(query, key, value)
+    out = jax.lax.with_sharding_constraint(out, P('dp', None, ('axis', 'sp'), None))
+    return out
    
 
 # <--- MODIFIED: Added window_size parameter to the function signature --->
@@ -498,7 +550,7 @@ def scaled_dot_product_attention(
     # <--- MODIFIED: Pass window_size to the backend function --->
     # Only use ring attention in self attention
     if jkey.shape[2] > 10000 and USE_RING_ATTENTION:
-      res = _tpu_ring_attention(jquery, jkey, jvalue, env)
+      res = _tpu_ring_attention(jquery, jkey, jvalue, env, scale=scale, is_causal=is_causal, window_size=window_size)
     else:
       res = _tpu_splash_attention(jquery, jkey, jvalue, env, scale=scale, is_causal=is_causal, window_size=window_size)
     return env.j2t_iso(res)
@@ -996,7 +1048,7 @@ def parse_args():
     parser.add_argument("--fps", type=int, default=FPS)
     parser.add_argument("--num_inference_steps", type=int, default=NUM_STEP)
     parser.add_argument("--window_size", type=int, nargs=2, default=None)
-    parser.add_argument("--use_dp", action="store_true", default=USE_DP)
+    parser.add_argument("--use_dp", type=bool, default=USE_DP)
     parser.add_argument("--sp_num", type=int, default=SP_NUM)
     parser.add_argument("--t5_cpu", action="store_true", default=False, help="Offload T5 text_encoder to CPU")
     parser.add_argument("--bqsize", type=int, default=BQSIZE, help="Block Q size")
@@ -1005,7 +1057,7 @@ def parse_args():
     parser.add_argument("--profile", action="store_true", default=False, help="Add profiler")
     parser.add_argument("--use_fsdp", type=bool, default=USE_FSDP, help="Use FSDP")
     parser.add_argument("--use_k_smooth", type=bool, default=USE_K_SMOOTH, help="Use K smooth")
-    parser.add_argument("--use_ring_attention", type=bool, default=USE_RING_ATTENTION, help="Use ring attention")
+    parser.add_argument("--use_ring_attention", action="store_true", default=USE_RING_ATTENTION, help="Use ring attention")
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -1016,4 +1068,5 @@ if __name__ == '__main__':
   BKVCOMPUTESIZE = args.bkvcomputesize
   USE_K_SMOOTH = args.use_k_smooth
   USE_RING_ATTENTION = args.use_ring_attention
+  USE_DP = args.use_dp
   main()
