@@ -685,9 +685,6 @@ def flash_attention_kernel(
     q_ref,
     k_ref,
     v_ref,
-    m_tile_ref,
-    l_tile_ref,
-    o_tile_ref,
     q_segment_ids_ref,
     kv_segment_ids_ref,
     mask_ref,
@@ -724,9 +721,9 @@ def flash_attention_kernel(
 
   @pl.when(j == 0)
   def init():
-    o_scratch_ref[...] = o_tile_ref[...]
-    m_scratch_ref[...] = m_tile_ref[...]
-    l_scratch_ref[...] = l_tile_ref[...]
+    o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
+    m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
+    l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
 
   global_kv_index, _, should_run, should_not_mask = _next_nonzero(
       h,
@@ -825,9 +822,9 @@ def flash_attention_kernel(
           logsumexp_ref.dtype
       )
 
-    # m_scratch_ref[...] = jnp.zeros_like(m_scratch_ref)
-    # l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
-    # o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
+    m_scratch_ref[...] = jnp.zeros_like(m_scratch_ref)
+    l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
+    o_scratch_ref[...] = jnp.zeros_like(o_scratch_ref)
 
 
 @overload
@@ -1018,9 +1015,6 @@ def _splash_attention_forward(
           ),
           v_index_map,
       ),
-      pl.BlockSpec((None, bq, NUM_LANES), lambda h, i, j, *_: (h, i, 0)),
-      pl.BlockSpec((None, bq, NUM_LANES), lambda h, i, j, *_: (h, i, 0)),
-      pl.BlockSpec((None, bq, head_dim_v), lambda h, i, j, *_: (h, i, 0)),
   ]
   if segment_ids is not None:
     in_specs += [
@@ -1059,16 +1053,16 @@ def _splash_attention_forward(
   num_scalar_prefetch = 3
 
   out_shapes = [
-      jax.ShapeDtypeStruct((num_q_heads, q_seq_len, NUM_LANES), jnp.float32),  # m_scratch
-      jax.ShapeDtypeStruct((num_q_heads, q_seq_len, NUM_LANES), jnp.float32),  # l_scratch
-      jax.ShapeDtypeStruct((num_q_heads, q_seq_len, head_dim_v), jnp.float32),  # o_scratch
+      jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # m_scratch
+      jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # l_scratch
+      jax.ShapeDtypeStruct((bq, head_dim_v), jnp.float32),  # o_scratch
       jax.ShapeDtypeStruct((num_q_heads, q_seq_len, head_dim_v), q.dtype),
   ]
   out_specs = [
       # TODO(sharadmv): convert m/l to be scratch
-      pl.BlockSpec((None, bq, NUM_LANES), lambda h, i, j, *_: (h, i, 0)),
-      pl.BlockSpec((None, bq, NUM_LANES), lambda h, i, j, *_: (h, i, 0)),
-      pl.BlockSpec((None, bq, head_dim_v), lambda h, i, j, *_: (h, i, 0)),
+      pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
+      pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
+      pl.BlockSpec((bq, head_dim_v), lambda h, i, j, *_: (0, 0)),
       pl.BlockSpec((None, bq, head_dim_v), out_index_map),
   ]
   if save_residuals:
@@ -1101,81 +1095,55 @@ def _splash_attention_forward(
   else:
     grid_width = kv_seq_len // bkv
 
-  axis_name = ('axis', 'sp')
-  # axis_name = 'axis'
-  axis_size = lax.psum(1, axis_name)
-
-  o = jnp.zeros((num_q_heads, q_seq_len, head_dim_v)).astype(q.dtype)
-  l = jnp.zeros((num_q_heads, q_seq_len, NUM_LANES)).astype(q.dtype)
-  m = jnp.full((num_q_heads, q_seq_len, NUM_LANES), mask_value).astype(q.dtype)
-
   grid = (num_q_heads, q_seq_len // bq, grid_width)
   with jax.named_scope(kernel_name):
+    all_out = pl.pallas_call(
+        partial(
+            flash_attention_kernel,
+            mask_value=mask_value,
+            grid_width=grid_width,
+            bq=bq,
+            bkv=bkv,
+            bkv_compute=bkv_compute,
+            head_dim_v=head_dim_v,
+            q_layout=q_layout,
+            k_layout=k_layout,
+            v_layout=v_layout,
+            attn_logits_soft_cap=attn_logits_soft_cap,
+            mask_function=mask_function,
+        ),
+        grid_spec=pltpu.PrefetchScalarGridSpec(
+            num_scalar_prefetch=num_scalar_prefetch,
+            in_specs=in_specs,
+            out_specs=out_specs,
+            grid=grid,
+        ),
+        compiler_params=pltpu.CompilerParams(
+          dimension_semantics=("parallel", "arbitrary", "arbitrary"),
+        ),
+        out_shape=out_shapes,
+        name=kernel_name,
+        interpret=interpret,
+    )(
+        fwd_mask_info.data_next,
+        fwd_mask_info.block_mask,
+        fwd_mask_info.mask_next,
+        q if q_layout == QKVLayout.HEAD_DIM_MINOR else q.swapaxes(-1, -2),
+        k if k_layout == QKVLayout.HEAD_DIM_MINOR else k.swapaxes(-1, -2),
+        v if v_layout == QKVLayout.HEAD_DIM_MINOR else v.swapaxes(-1, -2),
+        q_segment_ids,
+        kv_segment_ids,
+        fwd_mask_info.partial_mask_blocks,
+        q_sequence,
+    )
 
-    def scan_kv_block(carry, idx):
-      o, l, m, k, v, _ = carry
-
-      all_out = pl.pallas_call(
-          partial(
-              flash_attention_kernel,
-              mask_value=mask_value,
-              grid_width=grid_width,
-              bq=bq,
-              bkv=bkv,
-              bkv_compute=bkv_compute,
-              head_dim_v=head_dim_v,
-              q_layout=q_layout,
-              k_layout=k_layout,
-              v_layout=v_layout,
-              attn_logits_soft_cap=attn_logits_soft_cap,
-              mask_function=mask_function,
-          ),
-          grid_spec=pltpu.PrefetchScalarGridSpec(
-              num_scalar_prefetch=num_scalar_prefetch,
-              in_specs=in_specs,
-              out_specs=out_specs,
-              grid=grid,
-          ),
-          compiler_params=pltpu.CompilerParams(
-            dimension_semantics=("parallel", "arbitrary", "arbitrary"),
-          ),
-          out_shape=out_shapes,
-          name=kernel_name,
-          interpret=interpret,
-          input_output_aliases={
-            5: 0,
-            6: 1,
-            7: 2,
-          },
-      )(
-          fwd_mask_info.data_next,
-          fwd_mask_info.block_mask,
-          fwd_mask_info.mask_next,
-          q if q_layout == QKVLayout.HEAD_DIM_MINOR else q.swapaxes(-1, -2),
-          k if k_layout == QKVLayout.HEAD_DIM_MINOR else k.swapaxes(-1, -2),
-          v if v_layout == QKVLayout.HEAD_DIM_MINOR else v.swapaxes(-1, -2),
-          m,
-          l,
-          o,
-          q_segment_ids,
-          kv_segment_ids,
-          fwd_mask_info.partial_mask_blocks,
-          q_sequence,
-      )
-
-      (
-          m,
-          l,
-          o,
-          out,
-          logsumexp,
-      ) = all_out
-
-      k, v = map(lambda x: lax.ppermute(x, axis_name, perm=[(i, (i + 1) % axis_size) for i in range(axis_size)]), (k, v))
-      return (o, l, m, k, v, out), None
-  
-    (o, l, m, _, _, out), _ = lax.scan(scan_kv_block,
-      init=(o, l, m, k, v, o), xs=jnp.arange(0, axis_size))
+  (
+      _,
+      _,
+      _,
+      out,
+      logsumexp,
+  ) = all_out
 
   if save_residuals:
     assert logsumexp is not None
