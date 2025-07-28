@@ -70,9 +70,12 @@ FPS = 16
 NUM_STEP = 50
 # NUM_STEP = 1
 
-BQSIZE =  2240 # 2240 # 3024 #2520
-BKVSIZE = 1024
-BKVCOMPUTESIZE = 1024
+# BQSIZE =  3024 # 2240 # 3024 #2520
+# BKVSIZE = 2048
+# BKVCOMPUTESIZE = 1024
+BQSIZE =  2816 # 2240 # 3024 #2520
+BKVSIZE = 3840
+BKVCOMPUTESIZE = 256
 
 # <--- NEW: Local Attention Window Size Setting --->
 # window_size = (left, right). (128, 0) means each token can attend to itself and the previous 128 tokens.
@@ -483,6 +486,7 @@ def _tpu_ring_attention(query, key, value, env, scale=None, is_causal=False, win
             )
             out = splash_kernel(q_3d_padded.astype(jnp.float32), k_3d_padded.astype(jnp.float32), v_3d_padded.astype(jnp.float32)).astype(q_3d_padded.dtype)
             # Remove padding if any
+            out = jnp.swapaxes(out, 1, 2)
             return out[:, :q_orig_len, ...]
 
         # Map the kernel over the batch dimension.
@@ -497,7 +501,8 @@ def _tpu_ring_attention(query, key, value, env, scale=None, is_causal=False, win
     else:
         # Sharded case for Transformer. Split along the heads axis.
         # Attn1 self attention, key length is long.
-        if key.shape[2] > 10000 and False:
+        # if key.shape[2] > 10000 and False:
+        if key.shape[2] > 10000 or True:
           q_partition_spec = P('dp', 'axis', 'sp', None)
           kv_partition_spec = P('dp', 'axis', None, None)
         else:

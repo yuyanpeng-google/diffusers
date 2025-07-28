@@ -675,7 +675,7 @@ def _apply_mask_and_soft_cap(
     qk = cap_logits(qk)
   return qk
 
-
+### YYY: totol 0.060, comment cost op -> 0.024
 def flash_attention_kernel(
     # Prefetched inputs
     data_next_ref,
@@ -711,10 +711,15 @@ def flash_attention_kernel(
   float32 = jnp.float32
   HEAD_DIM_MINOR = QKVLayout.HEAD_DIM_MINOR
 
-  head_dim_v_repeats, rem = divmod(head_dim_v, NUM_LANES)
+  # head_dim_v_repeats, rem = divmod(head_dim_v, NUM_LANES)
+  # if rem != 0:
+  #   raise NotImplementedError(
+  #       f"{head_dim_v=} should be a multiple of {NUM_LANES}"
+  #   )
+  head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
   if rem != 0:
     raise NotImplementedError(
-        f"{head_dim_v=} should be a multiple of {NUM_LANES}"
+        f"{head_dim_v=} should be a multiple of {NUM_SUBLANES}"
     )
 
   h, i, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
@@ -734,11 +739,107 @@ def flash_attention_kernel(
       mask_next_ref,
   )
 
+###
+
+  # def body(kv_compute_index, _):
+  #   slice_k = pl.ds(kv_compute_index * bkv_compute, bkv_compute)
+  #   m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
+  #   assert m_prev.shape == (bq, NUM_LANES)
+  #   # assert m_prev.shape == (NUM_SUBLANES, bq)
+  #   assert l_prev.shape == (bq, NUM_LANES)
+
+  #   q = q_ref[...] if q_layout == HEAD_DIM_MINOR else q_ref[...].T
+  #   qk_dims = NT_DIM_NUMBERS if k_layout == HEAD_DIM_MINOR else NN_DIM_NUMBERS
+  #   if k_layout == HEAD_DIM_MINOR:
+  #     k = k_ref[slice_k, :]
+  #   else:
+  #     k = k_ref[:, slice_k]
+  #   qk = lax.dot_general(q, k, qk_dims, preferred_element_type=float32) # cost 0.028
+  #   # qk = jnp.zeros((1024, 1024), dtype=jnp.float32)
+  #   # qk = lax.dot_general(k, q, qk_dims, preferred_element_type=float32) # cost 0.028
+
+  #   assert qk.shape == (bq, bkv_compute)
+  #   # assert qk.shape == (bkv_compute, bq)
+  #   apply_mask_and_soft_cap = functools.partial(
+  #       _apply_mask_and_soft_cap,
+  #       qk,
+  #       mask_value,
+  #       should_not_mask,
+  #       mask_ref,
+  #       q_sequence_ref,
+  #       q_segment_ids_ref,
+  #       kv_segment_ids_ref,
+  #       attn_logits_soft_cap=attn_logits_soft_cap,
+  #       k_slice=slice_k,
+  #       # When the iteration space is shrunk (for local attention for example),
+  #       # the kv_index program_id does not correspond to the actual coordinates
+  #       # of the KV data. Make sure to use the 'unshrunk' index (coming from the
+  #       # data_next array) when computing the mask.
+  #       k_offset=global_kv_index * bkv + kv_compute_index * bkv_compute,
+  #       bq=bq,
+  #       mask_function=mask_function,
+  #   )
+
+  #   qk = apply_mask_and_soft_cap()
+
+  #   m_curr = qk.max(axis=-1)[:, None]  # pytype: disable=attribute-error # cost: 0.010
+  #   # m_curr = jnp.zeros((bq, 1), dtype=jnp.float32)
+  #   # m_curr = qk.max(axis=0)[None, :]  # pytype: disable=attribute-error # cost: 0.010
+  #   assert m_curr.shape == (bq, 1)
+  #   # assert m_curr.shape == (1, bq)
+  #   m_next = jnp.maximum(m_prev, m_curr)
+  #   assert m_next.shape == (bq, NUM_LANES)
+  #   # assert m_next.shape == (NUM_SUBLANES, bq)
+
+  #   bkv_repeats, rem = divmod(bkv_compute, NUM_LANES)
+  #   if rem != 0:
+  #     raise NotImplementedError(
+  #         f"{bkv_compute=} should be a multiple of {NUM_LANES}"
+  #     )
+  #   # bkv_repeats, rem = divmod(bkv_compute, NUM_SUBLANES)
+  #   # if rem != 0:
+  #   #   raise NotImplementedError(
+  #   #       f"{bkv_compute=} should be a multiple of {NUM_SUBLANES}"
+  #   #   )
+
+  #   s_curr = jnp.exp(qk - pltpu.repeat(m_next, bkv_repeats, axis=1)) # cost 0.012
+  #   # s_curr = jnp.zeros((bq, bkv_compute), dtype=jnp.float32)
+  #   # s_curr = jnp.exp(qk - pltpu.repeat(m_next, bkv_repeats, axis=0)) # cost 0.012
+  #   assert s_curr.shape == (bq, bkv_compute)
+  #   # assert s_curr.shape == (bkv_compute, bq)
+
+  #   l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=-1), l_prev.shape, (0,))
+  #   # l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=0), l_prev.shape, (0,))
+  #   assert l_curr.shape == (bq, NUM_LANES)
+
+  #   alpha = jnp.exp(m_prev - m_next)
+  #   # alpha = jnp.exp(m_prev - m_next).T
+  #   # alpha = pltpu.repeat(alpha, NUM_LANES // NUM_SUBLANES, axis=1)
+  #   # alpha = jnp.zeros_like(l_prev, dtype=jnp.float32)
+  #   l_next = l_curr + alpha * l_prev
+  #   m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
+
+  #   sv_dims = NN_DIM_NUMBERS if v_layout == HEAD_DIM_MINOR else NT_DIM_NUMBERS
+  #   if v_layout == HEAD_DIM_MINOR:
+  #     v = v_ref[slice_k, :]
+  #   else:
+  #     v = v_ref[:, slice_k]
+  #   v = v.astype(float32)
+  #   o_curr = lax.dot_general(s_curr, v, sv_dims) # cost 0.011
+  #   # o_curr = jnp.zeros_like(o_scratch_ref, dtype=jnp.float32)
+
+  #   alpha_o = pltpu.repeat(alpha, head_dim_v_repeats, axis=1)
+  #   o_scratch_ref[:] = alpha_o * o_scratch_ref[:] + o_curr
+
+###
+
   def body(kv_compute_index, _):
     slice_k = pl.ds(kv_compute_index * bkv_compute, bkv_compute)
     m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
-    assert m_prev.shape == (bq, NUM_LANES)
-    assert l_prev.shape == (bq, NUM_LANES)
+    # assert m_prev.shape == (bq, NUM_LANES)
+    assert m_prev.shape == (NUM_SUBLANES, bq)
+    # assert l_prev.shape == (bq, NUM_LANES)
+    assert l_prev.shape == (NUM_SUBLANES, bq)
 
     q = q_ref[...] if q_layout == HEAD_DIM_MINOR else q_ref[...].T
     qk_dims = NT_DIM_NUMBERS if k_layout == HEAD_DIM_MINOR else NN_DIM_NUMBERS
@@ -746,9 +847,12 @@ def flash_attention_kernel(
       k = k_ref[slice_k, :]
     else:
       k = k_ref[:, slice_k]
-    qk = lax.dot_general(q, k, qk_dims, preferred_element_type=float32)
+    # qk = lax.dot_general(q, k, qk_dims, preferred_element_type=float32) # cost 0.028
+    # qk = jnp.zeros((1024, 1024), dtype=jnp.float32)
+    qk = lax.dot_general(k, q, qk_dims, preferred_element_type=float32) # cost 0.028
 
-    assert qk.shape == (bq, bkv_compute)
+    # assert qk.shape == (bq, bkv_compute)
+    assert qk.shape == (bkv_compute, bq)
     apply_mask_and_soft_cap = functools.partial(
         _apply_mask_and_soft_cap,
         qk,
@@ -771,37 +875,61 @@ def flash_attention_kernel(
 
     qk = apply_mask_and_soft_cap()
 
-    m_curr = qk.max(axis=-1)[:, None]  # pytype: disable=attribute-error
-    assert m_curr.shape == (bq, 1)
+    # m_curr = qk.max(axis=-1)[:, None]  # pytype: disable=attribute-error # cost: 0.010
+    # m_curr = jnp.zeros((bq, 1), dtype=jnp.float32)
+    m_curr = qk.max(axis=0, keepdims=True) # pytype: disable=attribute-error # cost: 0.010
+    # assert m_curr.shape == (bq, 1)
+    assert m_curr.shape == (1, bq)
     m_next = jnp.maximum(m_prev, m_curr)
-    assert m_next.shape == (bq, NUM_LANES)
+    # assert m_next.shape == (bq, NUM_LANES)
+    assert m_next.shape == (NUM_SUBLANES, bq)
 
-    bkv_repeats, rem = divmod(bkv_compute, NUM_LANES)
-    if rem != 0:
-      raise NotImplementedError(
-          f"{bkv_compute=} should be a multiple of {NUM_LANES}"
-      )
+    # bkv_repeats, rem = divmod(bkv_compute, NUM_LANES)
+    # if rem != 0:
+    #   raise NotImplementedError(
+    #       f"{bkv_compute=} should be a multiple of {NUM_LANES}"
+    #   )
+    # bkv_repeats, rem = divmod(bkv_compute, NUM_SUBLANES)
+    # if rem != 0:
+    #   raise NotImplementedError(
+    #       f"{bkv_compute=} should be a multiple of {NUM_SUBLANES}"
+    #   )
 
-    s_curr = jnp.exp(qk - pltpu.repeat(m_next, bkv_repeats, axis=1))
-    assert s_curr.shape == (bq, bkv_compute)
+    # s_curr = jnp.exp(qk - pltpu.repeat(m_next, bkv_repeats, axis=1)) # cost 0.012
+    # s_curr = jnp.zeros((bq, bkv_compute), dtype=jnp.float32)
+    s_curr = jnp.exp(qk - m_next[0:1, ...]) # cost 0.012
+    # assert s_curr.shape == (bq, bkv_compute)
+    assert s_curr.shape == (bkv_compute, bq)
 
-    l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=-1), l_prev.shape, (0,))
-    assert l_curr.shape == (bq, NUM_LANES)
+    # l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=-1), l_prev.shape, (0,))
+    # l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=0), l_prev.shape, (0,))
+    l_curr = s_curr.sum(axis=0, keepdims=True)
+    # assert l_curr.shape == (bq, NUM_LANES)
+    assert l_curr.shape == (1, bq)
 
     alpha = jnp.exp(m_prev - m_next)
+    # alpha = jnp.exp(m_prev - m_next).T
+    # alpha = pltpu.repeat(alpha, NUM_LANES // NUM_SUBLANES, axis=1)
+    # alpha = jnp.zeros_like(l_prev, dtype=jnp.float32)
     l_next = l_curr + alpha * l_prev
     m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
 
-    sv_dims = NN_DIM_NUMBERS if v_layout == HEAD_DIM_MINOR else NT_DIM_NUMBERS
+    # sv_dims = NN_DIM_NUMBERS if v_layout == HEAD_DIM_MINOR else NT_DIM_NUMBERS
+    sv_dims = (((0,), (0,)), ((), ()))
     if v_layout == HEAD_DIM_MINOR:
       v = v_ref[slice_k, :]
     else:
       v = v_ref[:, slice_k]
     v = v.astype(float32)
-    o_curr = lax.dot_general(s_curr, v, sv_dims)
+    # o_curr = lax.dot_general(s_curr, v, sv_dims) # cost 0.011
+    o_curr = lax.dot_general(v, s_curr, sv_dims) # cost 0.011
+    # o_curr = jnp.zeros_like(o_scratch_ref, dtype=jnp.float32)
 
-    alpha_o = pltpu.repeat(alpha, head_dim_v_repeats, axis=1)
+    # alpha_o = pltpu.repeat(alpha, head_dim_v_repeats, axis=1)
+    alpha_o = alpha[0:1, ...]
     o_scratch_ref[:] = alpha_o * o_scratch_ref[:] + o_curr
+
+###
 
   @pl.when(should_run)
   def run():
@@ -814,7 +942,8 @@ def flash_attention_kernel(
   @pl.when(j == grid_width - 1)
   def end():
     l = l_scratch_ref[...]
-    l_inv = pltpu.repeat(1.0 / l, head_dim_v_repeats, axis=1)
+    # l_inv = pltpu.repeat(1.0 / l, head_dim_v_repeats, axis=1)
+    l_inv = pltpu.repeat(1.0 / l, head_dim_v_repeats, axis=0)
     o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
     if logsumexp_ref is not None:
       assert logsumexp_ref.shape == (bq, NUM_LANES)
@@ -962,7 +1091,8 @@ def _splash_attention_forward(
     return from_head_minor((h, i, 0), q_layout)
   def out_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
     del j, data_next_ref, mask_next_ref, block_mask_ref
-    return h, i, 0
+    # return h, i, 0
+    return h, 0, i
 
   k_layout = block_sizes.k_layout
   def k_index_map(h, i, j, data_next_ref, block_mask_ref, mask_next_ref=None):
@@ -1052,19 +1182,37 @@ def _splash_attention_forward(
 
   num_scalar_prefetch = 3
 
-  out_shapes = [
-      jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # m_scratch
-      jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # l_scratch
-      jax.ShapeDtypeStruct((bq, head_dim_v), jnp.float32),  # o_scratch
-      jax.ShapeDtypeStruct((num_q_heads, q_seq_len, head_dim_v), q.dtype),
-  ]
-  out_specs = [
-      # TODO(sharadmv): convert m/l to be scratch
-      pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
-      pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
-      pl.BlockSpec((bq, head_dim_v), lambda h, i, j, *_: (0, 0)),
-      pl.BlockSpec((None, bq, head_dim_v), out_index_map),
-  ]
+  # if True:
+  if False:
+    out_shapes = [
+        jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # m_scratch
+        # jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),  # m_scratch
+        jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),  # l_scratch
+        jax.ShapeDtypeStruct((bq, head_dim_v), jnp.float32),  # o_scratch
+        jax.ShapeDtypeStruct((num_q_heads, q_seq_len, head_dim_v), q.dtype),
+    ]
+    out_specs = [
+        # TODO(sharadmv): convert m/l to be scratch
+        pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
+        # pl.BlockSpec((NUM_SUBLANES, bq), lambda h, i, j, *_: (0, 0)),
+        pl.BlockSpec((bq, NUM_LANES), lambda h, i, j, *_: (0, 0)),
+        pl.BlockSpec((bq, head_dim_v), lambda h, i, j, *_: (0, 0)),
+        pl.BlockSpec((None, bq, head_dim_v), out_index_map),
+    ]
+  else:
+    out_shapes = [
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),  # m_scratch
+        jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),  # l_scratch
+        jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),  # o_scratch
+        jax.ShapeDtypeStruct((num_q_heads, head_dim_v, q_seq_len), q.dtype),
+    ]
+    out_specs = [
+        # TODO(sharadmv): convert m/l to be scratch
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda h, i, j, *_: (0, 0)),
+        pl.BlockSpec((NUM_SUBLANES, bq), lambda h, i, j, *_: (0, 0)),
+        pl.BlockSpec((head_dim_v, bq), lambda h, i, j, *_: (0, 0)),
+        pl.BlockSpec((None, head_dim_v, bq), out_index_map),
+    ]
   if save_residuals:
     out_shapes += [
         jax.ShapeDtypeStruct(
@@ -1124,6 +1272,7 @@ def _splash_attention_forward(
         out_shape=out_shapes,
         name=kernel_name,
         interpret=interpret,
+        # debug=True,
     )(
         fwd_mask_info.data_next,
         fwd_mask_info.block_mask,

@@ -11,6 +11,8 @@ import jax.numpy as jnp
 import math
 import time
 
+import ringattention_pallas_tpu_splash
+
 
 # Copy from wan_tx_splash_attn.py
 @functools.partial(jax.jit, static_argnames=("mesh", "bqsize", "bkvsize", "bkvcomputesize"))
@@ -83,11 +85,12 @@ def _tpu_splash_attention(
                 block_kv=min(bkvsize, padded_kv_seq_len),
                 block_kv_compute=min(bkvcomputesize, padded_kv_seq_len),
             )
-            splash_kernel = splash_attention.make_splash_mha(
+            splash_kernel = ringattention_pallas_tpu_splash.make_splash_mha(
                 mask=mask, block_sizes=block_sizes, head_shards=1, q_seq_shards=1
             )
             out = splash_kernel(q_3d_padded, k_3d_padded, v_3d_padded)
             # Remove padding if any
+            out = jnp.swapaxes(out, 1, 2)
             return out[:, :q_orig_len, ...]
 
         # Map the kernel over the batch dimension.
@@ -124,27 +127,32 @@ def _tpu_splash_attention(
 
 
 def main():
-    query = jnp.ones((2, 40, 75600, 128))
-    key = jnp.ones((2, 40, 75600, 128))
-    value = jnp.ones((2, 40, 75600, 128))
+    query = jnp.ones((1, 40, 75600, 128))
+    key = jnp.ones((1, 40, 75600, 128))
+    value = jnp.ones((1, 40, 75600, 128))
 
     bqsizes = (1512,)
 
-    bqsizes = (600, 630, 675, 700, 720, 756, 840, 900, 945, 1008, 1050, 1080, 1200, 1260, 1350, 1400, 1512, 1575, 1680, 1800, 1890, 2100, 2160, 2520, 2700, 2800, 3024, 3150, 3600, 3780, 4200)
-    bkvsizes = range(512, 4096, 128)
+    # bqsizes = (600, 630, 675, 700, 720, 756, 840, 900, 945, 1008, 1050, 1080, 1200, 1260, 1350, 1400, 1512, 1575, 1680, 1800, 1890, 2100, 2160, 2520, 2700, 2800, 3024, 3150, 3600, 3780, 4200)
+    bqsizes = range(1024, 4096, 128)
+    bkvsizes = range(1024, 4096, 128)
     bkvcomputesizes = range(128, 4096, 128)
     
     # bqsizes = list(range(512, 4096, 128))
     # bkvsizes = (3072,)
     # bkvcomputesizes = (1024,)
 
-    tp_dim = jax.device_count() // 2
-    dp_dim = 2
+    tp_dim = jax.device_count()
+    dp_dim = 1
     sp_dim = 1
     print("sp, bqsize, bkvsize, bkvcomputesize, time (s), padded_key_size")
     while tp_dim >= 1:
         mesh_devices = mesh_utils.create_device_mesh((tp_dim, dp_dim, sp_dim), allow_split_physical_axes=True)
         mesh = Mesh(mesh_devices, ('axis','dp','sp'))
+
+        query = jax.device_put(query, NamedSharding(mesh, P('dp', None, ('axis', 'sp'), None)))
+        key = jax.device_put(key, NamedSharding(mesh, P('dp', None, ('axis', 'sp'), None)))
+        value = jax.device_put(value, NamedSharding(mesh, P('dp', None, ('axis', 'sp'), None)))
         with mesh:
             for bqsize in bqsizes:
                 for bkvsize in bkvsizes:
