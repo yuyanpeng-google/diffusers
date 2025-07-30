@@ -71,86 +71,87 @@ def _flash_attention_kernel(
     l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
 
   def body(kv_compute_index, _):
-    with jax.named_scope("qk"):
-      slice_k = pl.ds(kv_compute_index * bkv_compute, bkv_compute)
-      m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
-      assert m_prev.shape == (NUM_SUBLANES, bq)
-      assert l_prev.shape == (NUM_SUBLANES, bq)
+    # with jax.named_scope("qk"):
+    slice_k = pl.ds(kv_compute_index * bkv_compute, bkv_compute)
+    m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
+    assert m_prev.shape == (NUM_SUBLANES, bq)
+    assert l_prev.shape == (NUM_SUBLANES, bq)
 
-      q = q_ref[...]
-      k = k_ref[slice_k, :]
-      qk = lax.dot_general(k, q, NT_DIM_NUMBERS, preferred_element_type=float32)
-      assert qk.shape == (bkv_compute, bq)
+    q = q_ref[...]
+    k = k_ref[slice_k, :]
+    qk = lax.dot_general(k, q, NT_DIM_NUMBERS, preferred_element_type=float32)
+    assert qk.shape == (bkv_compute, bq)
 
-    with jax.named_scope("softmax"):
-      with jax.named_scope("qk_max"):
-        m_curr = qk.max(axis=0)[None, :]
-        assert m_curr.shape == (1, bq)
-      with jax.named_scope("qk_maximum"):
-        m_next = jnp.maximum(m_prev, m_curr)
-        assert m_next.shape == (NUM_SUBLANES, bq)
+    # with jax.named_scope("softmax"):
+    #   with jax.named_scope("qk_max"):
+    #     m_curr = qk.max(axis=0)[None, :]
+    #     assert m_curr.shape == (1, bq)
+    #   with jax.named_scope("qk_maximum"):
+    #     m_next = jnp.maximum(m_prev, m_curr)
+    #     assert m_next.shape == (NUM_SUBLANES, bq)
 
-      with jax.named_scope("qk_exp"):
-        # m_single = m_next[0:1]
-        # step = 8
-        # s_curr_list = []
-        # for i in range(0, qk.shape[0], step):
-        #   s_curr_list.append(jnp.exp(qk[i:i+step] - m_single))
-        # s_curr = jnp.concatenate(s_curr_list)
+    #   with jax.named_scope("qk_exp"):
+    #     # m_single = m_next[0:1]
+    #     # step = 8
+    #     # s_curr_list = []
+    #     # for i in range(0, qk.shape[0], step):
+    #     #   s_curr_list.append(jnp.exp(qk[i:i+step] - m_single))
+    #     # s_curr = jnp.concatenate(s_curr_list)
 
-        s_curr = jnp.exp(qk - m_next[0:1])
-        assert s_curr.shape == (bkv_compute, bq)
+    #     s_curr = jnp.exp(qk - m_next[0:1])
+    #     assert s_curr.shape == (bkv_compute, bq)
 
-      with jax.named_scope("qk_sum"):
-        l_curr = s_curr.sum(axis=0, keepdims=True)
-        assert l_curr.shape == (1, bq)
+    #   with jax.named_scope("qk_sum"):
+    #     l_curr = s_curr.sum(axis=0, keepdims=True)
+    #     assert l_curr.shape == (1, bq)
 
-      with jax.named_scope("qk_alpha"):
-        alpha = jnp.exp(m_prev - m_next)
-        l_next = l_curr + alpha * l_prev
-        m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
+    #   with jax.named_scope("qk_alpha"):
+    #     alpha = jnp.exp(m_prev - m_next)
+    #     l_next = l_curr + alpha * l_prev
+    #     m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
 
-    with jax.named_scope("qkv"):
-      v = v_ref[slice_k, :].astype(float32)
-      sv_dims = (((0,), (0,)), ((), ()))
-      o_curr = lax.dot_general(v, s_curr, sv_dims)
-      alpha_o = alpha[0:1, ...]
-      o_scratch_ref[:] = alpha_o * o_scratch_ref[:] + o_curr
+    # with jax.named_scope("qkv"):
+    #   v = v_ref[slice_k, :].astype(float32)
+    #   sv_dims = (((0,), (0,)), ((), ()))
+    #   o_curr = lax.dot_general(v, s_curr, sv_dims)
+    #   alpha_o = alpha[0:1, ...]
+    #   o_scratch_ref[:] = alpha_o * o_scratch_ref[:] + o_curr
 
     ###
 
 
     # with jax.named_scope("softmax_qkv"):
-    #   o_prev = o_scratch_ref[:]
+    o_prev = o_scratch_ref[:]
 
-    #   v = v_ref[slice_k, :].astype(float32)
-    #   step = 256
-    #   for i in range(0, qk.shape[0], step):
-    #     m_curr = qk[i:i+step].max(axis=0)[None, :]
-    #     assert m_curr.shape == (1, bq)
-          
-    #     m_next = jnp.maximum(m_prev, m_curr)
-    #     assert m_next.shape == (NUM_SUBLANES, bq)
+    v = v_ref[slice_k, :].astype(float32)
+    step = 256
+    assert qk.shape[0] % step == 0
+    for i in range(0, qk.shape[0], step):
+      m_curr = qk[i:i+step].max(axis=0)[None, :]
+      assert m_curr.shape == (1, bq)
+        
+      m_next = jnp.maximum(m_prev, m_curr)
+      assert m_next.shape == (NUM_SUBLANES, bq)
 
-    #     s_curr = (jnp.exp(qk[i:i+step] - m_next[0:1]))
-    #     # assert s_curr.shape == (bkv_compute, bq)
+      s_curr = (jnp.exp(qk[i:i+step] - m_next[0:1]))
+      # assert s_curr.shape == (bkv_compute, bq)
 
-    #     l_curr = s_curr.sum(axis=0, keepdims=True)
-    #     assert l_curr.shape == (1, bq)
+      l_curr = s_curr.sum(axis=0, keepdims=True)
+      assert l_curr.shape == (1, bq)
 
-    #     alpha = jnp.exp(m_prev - m_next)
-    #     l_next = l_curr + alpha * l_prev
+      alpha = jnp.exp(m_prev - m_next)
+      l_next = l_curr + alpha * l_prev
 
-    #     sv_dims = (((0,), (0,)), ((), ()))
-    #     o_curr = lax.dot_general(v[i:i+step], s_curr, sv_dims)
-    #     alpha_o = alpha[0:1, ...]
-    #     o_prev = alpha_o * o_prev + o_curr
+      sv_dims = (((0,), (0,)), ((), ()))
+      o_curr = lax.dot_general(v[i:i+step], s_curr, sv_dims)
+      alpha_o = alpha[0:1, ...]
+      o_prev = alpha_o * o_prev + o_curr
 
-    #     m_prev = m_next
-    #     l_prev = l_next
+      m_prev = m_next
+      l_prev = l_next
 
-    #   m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
-    #   o_scratch_ref[:] = o_prev
+    m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
+    o_scratch_ref[:] = o_prev
 
     ###
 
@@ -225,7 +226,7 @@ def __splash_attention_forward(
       compiler_params=pltpu.CompilerParams(dimension_semantics=("parallel", "arbitrary", "arbitrary")),
       out_shape=out_shapes,
       interpret=interpret,
-      debug=True,
+      # debug=True,
   )(q, k, v)
   return all_out[-1]
 

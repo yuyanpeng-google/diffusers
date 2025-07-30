@@ -11,7 +11,8 @@ import jax.numpy as jnp
 import math
 import time
 
-import ringattention_pallas_tpu_splash
+# import ringattention_pallas_tpu_splash
+import custom_splash_attention
 
 
 # Copy from wan_tx_splash_attn.py
@@ -64,29 +65,13 @@ def _tpu_splash_attention(
             padded_q_seq_len = q_3d_padded.shape[1]
             padded_kv_seq_len = k_3d_padded.shape[1]
 
-            # ======================= NEW MASK LOGIC =======================
-            if window_size is not None:
-                mask_class = functools.partial(
-                    splash_attention.LocalMask, window_size=window_size, offset=0
-                )
-            else:
-                mask_class = splash_attention.FullMask
-
-            mask = splash_attention.MultiHeadMask(
-                [
-                    mask_class((padded_q_seq_len, padded_kv_seq_len))
-                    for _ in range(num_heads_on_device)
-                ]
-            )
-            # =============================================================
-
             block_sizes = splash_attention.BlockSizes(
                 block_q=min(bqsize, padded_q_seq_len),
                 block_kv=min(bkvsize, padded_kv_seq_len),
                 block_kv_compute=min(bkvcomputesize, padded_kv_seq_len),
             )
-            splash_kernel = ringattention_pallas_tpu_splash.make_splash_mha(
-                mask=mask, block_sizes=block_sizes, head_shards=1, q_seq_shards=1
+            splash_kernel = custom_splash_attention.make_splash_mha(
+                block_sizes=block_sizes,
             )
             out = splash_kernel(q_3d_padded, k_3d_padded, v_3d_padded)
             # Remove padding if any
@@ -134,13 +119,21 @@ def main():
     bqsizes = (1512,)
 
     # bqsizes = (600, 630, 675, 700, 720, 756, 840, 900, 945, 1008, 1050, 1080, 1200, 1260, 1350, 1400, 1512, 1575, 1680, 1800, 1890, 2100, 2160, 2520, 2700, 2800, 3024, 3150, 3600, 3780, 4200)
-    bqsizes = range(1024, 4096, 128)
-    bkvsizes = range(1024, 4096, 128)
-    bkvcomputesizes = range(128, 4096, 128)
+    bqsizes = range(2048, 4096, 256)
+    bkvsizes = range(2048, 4096, 256)
+    bkvcomputesizes = range(256, 2048, 256)
     
     # bqsizes = list(range(512, 4096, 128))
     # bkvsizes = (3072,)
     # bkvcomputesizes = (1024,)
+
+    # BQSIZE =  2816 # 2240 # 3024 #2520
+    # BKVSIZE = 3840
+    # BKVCOMPUTESIZE = 256
+
+    # bqsizes = (2048,)
+    # bkvsizes = (2048,)
+    # bkvcomputesizes = (2048,)
 
     tp_dim = jax.device_count()
     dp_dim = 1

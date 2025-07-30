@@ -75,8 +75,8 @@ NUM_STEP = 50
 # BKVSIZE = 2048
 # BKVCOMPUTESIZE = 1024
 BQSIZE =  2816 # 2240 # 3024 #2520
-BKVSIZE = 3840
-BKVCOMPUTESIZE = 256
+BKVSIZE = 3072
+BKVCOMPUTESIZE = 768
 
 # <--- NEW: Local Attention Window Size Setting --->
 # window_size = (left, right). (128, 0) means each token can attend to itself and the previous 128 tokens.
