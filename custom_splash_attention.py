@@ -91,11 +91,14 @@ def _flash_attention_kernel(
         assert m_next.shape == (NUM_SUBLANES, bq)
 
       with jax.named_scope("qk_exp"):
-        bkv_repeats, rem = divmod(bkv_compute, NUM_SUBLANES)
-        if rem != 0:
-          raise NotImplementedError(f"{bkv_compute=} should be a multiple of {NUM_SUBLANES}")
-        qk_sub = qk - pltpu.repeat(m_next, bkv_repeats, axis=0)
-        s_curr = jnp.exp(qk_sub)
+        # m_single = m_next[0:1]
+        # step = 8
+        # s_curr_list = []
+        # for i in range(0, qk.shape[0], step):
+        #   s_curr_list.append(jnp.exp(qk[i:i+step] - m_single))
+        # s_curr = jnp.concatenate(s_curr_list)
+
+        s_curr = jnp.exp(qk - m_next[0:1])
         assert s_curr.shape == (bkv_compute, bq)
 
       with jax.named_scope("qk_sum"):
@@ -113,6 +116,43 @@ def _flash_attention_kernel(
       o_curr = lax.dot_general(v, s_curr, sv_dims)
       alpha_o = alpha[0:1, ...]
       o_scratch_ref[:] = alpha_o * o_scratch_ref[:] + o_curr
+
+    ###
+
+
+    # with jax.named_scope("softmax_qkv"):
+    #   o_prev = o_scratch_ref[:]
+
+    #   v = v_ref[slice_k, :].astype(float32)
+    #   step = 256
+    #   for i in range(0, qk.shape[0], step):
+    #     m_curr = qk[i:i+step].max(axis=0)[None, :]
+    #     assert m_curr.shape == (1, bq)
+          
+    #     m_next = jnp.maximum(m_prev, m_curr)
+    #     assert m_next.shape == (NUM_SUBLANES, bq)
+
+    #     s_curr = (jnp.exp(qk[i:i+step] - m_next[0:1]))
+    #     # assert s_curr.shape == (bkv_compute, bq)
+
+    #     l_curr = s_curr.sum(axis=0, keepdims=True)
+    #     assert l_curr.shape == (1, bq)
+
+    #     alpha = jnp.exp(m_prev - m_next)
+    #     l_next = l_curr + alpha * l_prev
+
+    #     sv_dims = (((0,), (0,)), ((), ()))
+    #     o_curr = lax.dot_general(v[i:i+step], s_curr, sv_dims)
+    #     alpha_o = alpha[0:1, ...]
+    #     o_prev = alpha_o * o_prev + o_curr
+
+    #     m_prev = m_next
+    #     l_prev = l_next
+
+    #   m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
+    #   o_scratch_ref[:] = o_prev
+
+    ###
 
   lax.fori_loop(0, bkv // bkv_compute, body, None, unroll=True)
 

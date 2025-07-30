@@ -49,7 +49,8 @@ import argparse
 
 
 # from ringattention_pallas_tpu import ring_flash_attention_tpu
-import ringattention_pallas_tpu_splash
+# import ringattention_pallas_tpu_splash
+import custom_splash_attention
 
 #### SETTINGS
 # 1.3B
@@ -97,7 +98,7 @@ LOGICAL_AXIS_RULES = (
 
 USE_K_SMOOTH = True
 
-USE_RING_ATTENTION = False
+USE_CUSTOM_ATTENTION = False
 
 ####
 
@@ -421,7 +422,7 @@ def _tpu_splash_attention(query, key, value, env, scale=None, is_causal=False, w
     return out
 
 
-def _tpu_ring_attention(query, key, value, env, scale=None, is_causal=False, window_size=None):
+def _tpu_custom_attention(query, key, value, env, scale=None, is_causal=False, window_size=None):
     import jax
     import math
     mesh = env._mesh
@@ -465,24 +466,13 @@ def _tpu_ring_attention(query, key, value, env, scale=None, is_causal=False, win
             padded_q_seq_len = q_3d_padded.shape[1]
             padded_kv_seq_len = k_3d_padded.shape[1]
 
-            # ======================= NEW MASK LOGIC =======================
-            if window_size is not None:
-                mask_class = functools.partial(splash_attention.LocalMask, window_size=window_size, offset=0)
-            else:
-                mask_class = splash_attention.FullMask
-
-            mask = splash_attention.MultiHeadMask(
-                [mask_class((padded_q_seq_len, padded_kv_seq_len)) for _ in range(num_heads_on_device)]
-            )
-            # =============================================================
-
             block_sizes = splash_attention.BlockSizes(
                 block_q=min(BQSIZE, padded_q_seq_len),
                 block_kv=min(BKVSIZE, padded_kv_seq_len),
                 block_kv_compute=min(BKVCOMPUTESIZE, padded_kv_seq_len),
             )
-            splash_kernel = ringattention_pallas_tpu_splash.make_splash_mha(
-                mask=mask, block_sizes=block_sizes, head_shards=1, q_seq_shards=1
+            splash_kernel = custom_splash_attention.make_splash_mha(
+                block_sizes=block_sizes
             )
             out = splash_kernel(q_3d_padded.astype(jnp.float32), k_3d_padded.astype(jnp.float32), v_3d_padded.astype(jnp.float32)).astype(q_3d_padded.dtype)
             # Remove padding if any
@@ -554,8 +544,8 @@ def scaled_dot_product_attention(
       jkey = jkey - key_mean
     # <--- MODIFIED: Pass window_size to the backend function --->
     # Only use ring attention in self attention
-    if jkey.shape[2] > 10000 and USE_RING_ATTENTION:
-      res = _tpu_ring_attention(jquery, jkey, jvalue, env, scale=scale, is_causal=is_causal, window_size=window_size)
+    if jkey.shape[2] > 10000 and USE_CUSTOM_ATTENTION:
+      res = _tpu_custom_attention(jquery, jkey, jvalue, env, scale=scale, is_causal=is_causal, window_size=window_size)
     else:
       res = _tpu_splash_attention(jquery, jkey, jvalue, env, scale=scale, is_causal=is_causal, window_size=window_size)
     return env.j2t_iso(res)
@@ -1062,7 +1052,7 @@ def parse_args():
     parser.add_argument("--profile", action="store_true", default=False, help="Add profiler")
     parser.add_argument("--use_fsdp", type=bool, default=USE_FSDP, help="Use FSDP")
     parser.add_argument("--use_k_smooth", type=bool, default=USE_K_SMOOTH, help="Use K smooth")
-    parser.add_argument("--use_ring_attention", action="store_true", default=USE_RING_ATTENTION, help="Use ring attention")
+    parser.add_argument("--use_custom_attention", action="store_true", default=USE_CUSTOM_ATTENTION, help="Use custom attention")
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -1072,6 +1062,6 @@ if __name__ == '__main__':
   BKVSIZE = args.bkvsize
   BKVCOMPUTESIZE = args.bkvcomputesize
   USE_K_SMOOTH = args.use_k_smooth
-  USE_RING_ATTENTION = args.use_ring_attention
+  USE_CUSTOM_ATTENTION = args.use_custom_attention
   USE_DP = args.use_dp
   main()
