@@ -15,6 +15,7 @@ from jax import lax
 partial = functools.partial
 DEFAULT_MASK_VALUE = -0.7 * float(np.finfo(np.dtype("float32")).max)
 NUM_LANES = 128
+NUM_SUBLANES = 8
 NN_DIM_NUMBERS = (((1,), (0,)), ((), ()))
 NT_DIM_NUMBERS = (((1,), (1,)), ((), ()))
 
@@ -57,9 +58,9 @@ def _flash_attention_kernel(
     head_dim_v: int,
 ):
   float32 = jnp.float32
-  head_dim_v_repeats, rem = divmod(head_dim_v, NUM_LANES)
+  head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
   if rem != 0:
-    raise NotImplementedError(f"{head_dim_v=} should be a multiple of {NUM_LANES}")
+    raise NotImplementedError(f"{head_dim_v=} should be a multiple of {NUM_SUBLANES}")
 
   h, i, j = pl.program_id(0), pl.program_id(1), pl.program_id(2)
 
@@ -73,24 +74,38 @@ def _flash_attention_kernel(
     with jax.named_scope("qk"):
       slice_k = pl.ds(kv_compute_index * bkv_compute, bkv_compute)
       m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
+      assert m_prev.shape == (NUM_SUBLANES, bq)
+      assert l_prev.shape == (NUM_SUBLANES, bq)
+
       q = q_ref[...]
       k = k_ref[slice_k, :]
-      qk = lax.dot_general(q, k, NT_DIM_NUMBERS, preferred_element_type=float32)
+      qk = lax.dot_general(k, q, NT_DIM_NUMBERS, preferred_element_type=float32)
+      assert qk.shape == (bkv_compute, bq)
+
     with jax.named_scope("softmax"):
-      m_curr = qk.max(axis=-1)[:, None]
+      m_curr = qk.max(axis=0)[None, :]
+      assert m_curr.shape == (1, bq)
       m_next = jnp.maximum(m_prev, m_curr)
-      bkv_repeats, rem = divmod(bkv_compute, NUM_LANES)
+      assert m_next.shape == (NUM_SUBLANES, bq)
+
+      bkv_repeats, rem = divmod(bkv_compute, NUM_SUBLANES)
       if rem != 0:
-        raise NotImplementedError(f"{bkv_compute=} should be a multiple of {NUM_LANES}")
-      s_curr = jnp.exp(qk - pltpu.repeat(m_next, bkv_repeats, axis=1))
-      l_curr = jax.lax.broadcast_in_dim(s_curr.sum(axis=-1), l_prev.shape, (0,))
+        raise NotImplementedError(f"{bkv_compute=} should be a multiple of {NUM_SUBLANES}")
+      s_curr = jnp.exp(qk - pltpu.repeat(m_next, bkv_repeats, axis=0))
+      assert s_curr.shape == (bkv_compute, bq)
+
+      l_curr = s_curr.sum(axis=0, keepdims=True)
+      assert l_curr.shape == (1, bq)
+
       alpha = jnp.exp(m_prev - m_next)
       l_next = l_curr + alpha * l_prev
-    with jax.named_scope("qkv"):
       m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
+
+    with jax.named_scope("qkv"):
       v = v_ref[slice_k, :].astype(float32)
-      o_curr = lax.dot_general(s_curr, v, NN_DIM_NUMBERS)
-      alpha_o = pltpu.repeat(alpha, head_dim_v_repeats, axis=1)
+      sv_dims = (((0,), (0,)), ((), ()))
+      o_curr = lax.dot_general(v, s_curr, sv_dims)
+      alpha_o = alpha[0:1, ...]
       o_scratch_ref[:] = alpha_o * o_scratch_ref[:] + o_curr
 
   lax.fori_loop(0, bkv // bkv_compute, body, None, unroll=True)
@@ -98,7 +113,7 @@ def _flash_attention_kernel(
   @pl.when(j == grid_width - 1)
   def end():
     l = l_scratch_ref[...]
-    l_inv = pltpu.repeat(1.0 / l, head_dim_v_repeats, axis=1)
+    l_inv = pltpu.repeat(1.0 / l, head_dim_v_repeats, axis=0)
     o_ref[...] = (o_scratch_ref[...] * l_inv).astype(o_ref.dtype)
 
 def __splash_attention_forward(
@@ -119,7 +134,7 @@ def __splash_attention_forward(
   def q_index_map(h, i, j, *_):
     return (h, i, 0)
   def out_index_map(h, i, j, *_):
-    return h, i, 0
+    return h, 0, i
   def k_index_map(h, i, j, *_):
     return (h // q_heads_per_kv_head, j, 0)
   def v_index_map(h, i, j, *_):
@@ -131,16 +146,16 @@ def __splash_attention_forward(
       pl.BlockSpec((None, bkv, head_dim_v), v_index_map),
   ]
   out_shapes = [
-      jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),
-      jax.ShapeDtypeStruct((bq, NUM_LANES), jnp.float32),
-      jax.ShapeDtypeStruct((bq, head_dim_v), jnp.float32),
-      jax.ShapeDtypeStruct((num_q_heads, q_seq_len, head_dim_v), q.dtype),
+      jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+      jax.ShapeDtypeStruct((NUM_SUBLANES, bq), jnp.float32),
+      jax.ShapeDtypeStruct((head_dim_v, bq), jnp.float32),
+      jax.ShapeDtypeStruct((num_q_heads, head_dim_v, q_seq_len), q.dtype),
   ]
   out_specs = [
-      pl.BlockSpec((bq, NUM_LANES), lambda *_: (0, 0)),
-      pl.BlockSpec((bq, NUM_LANES), lambda *_: (0, 0)),
-      pl.BlockSpec((bq, head_dim_v), lambda *_: (0, 0)),
-      pl.BlockSpec((None, bq, head_dim_v), out_index_map),
+      pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+      pl.BlockSpec((NUM_SUBLANES, bq), lambda *_: (0, 0)),
+      pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
+      pl.BlockSpec((None, head_dim_v, bq), out_index_map),
   ]
   grid_width = kv_seq_len // bkv
   grid = (num_q_heads, q_seq_len // bq, grid_width)
