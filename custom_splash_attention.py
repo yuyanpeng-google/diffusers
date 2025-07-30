@@ -83,23 +83,29 @@ def _flash_attention_kernel(
       assert qk.shape == (bkv_compute, bq)
 
     with jax.named_scope("softmax"):
-      m_curr = qk.max(axis=0)[None, :]
-      assert m_curr.shape == (1, bq)
-      m_next = jnp.maximum(m_prev, m_curr)
-      assert m_next.shape == (NUM_SUBLANES, bq)
+      with jax.named_scope("qk_max"):
+        m_curr = qk.max(axis=0)[None, :]
+        assert m_curr.shape == (1, bq)
+      with jax.named_scope("qk_maximum"):
+        m_next = jnp.maximum(m_prev, m_curr)
+        assert m_next.shape == (NUM_SUBLANES, bq)
 
-      bkv_repeats, rem = divmod(bkv_compute, NUM_SUBLANES)
-      if rem != 0:
-        raise NotImplementedError(f"{bkv_compute=} should be a multiple of {NUM_SUBLANES}")
-      s_curr = jnp.exp(qk - pltpu.repeat(m_next, bkv_repeats, axis=0))
-      assert s_curr.shape == (bkv_compute, bq)
+      with jax.named_scope("qk_exp"):
+        bkv_repeats, rem = divmod(bkv_compute, NUM_SUBLANES)
+        if rem != 0:
+          raise NotImplementedError(f"{bkv_compute=} should be a multiple of {NUM_SUBLANES}")
+        qk_sub = qk - pltpu.repeat(m_next, bkv_repeats, axis=0)
+        s_curr = jnp.exp(qk_sub)
+        assert s_curr.shape == (bkv_compute, bq)
 
-      l_curr = s_curr.sum(axis=0, keepdims=True)
-      assert l_curr.shape == (1, bq)
+      with jax.named_scope("qk_sum"):
+        l_curr = s_curr.sum(axis=0, keepdims=True)
+        assert l_curr.shape == (1, bq)
 
-      alpha = jnp.exp(m_prev - m_next)
-      l_next = l_curr + alpha * l_prev
-      m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
+      with jax.named_scope("qk_alpha"):
+        alpha = jnp.exp(m_prev - m_next)
+        l_next = l_curr + alpha * l_prev
+        m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
 
     with jax.named_scope("qkv"):
       v = v_ref[slice_k, :].astype(float32)
@@ -179,6 +185,7 @@ def __splash_attention_forward(
       compiler_params=pltpu.CompilerParams(dimension_semantics=("parallel", "arbitrary", "arbitrary")),
       out_shape=out_shapes,
       interpret=interpret,
+      debug=True,
   )(q, k, v)
   return all_out[-1]
 
