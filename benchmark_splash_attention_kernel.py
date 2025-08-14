@@ -16,7 +16,7 @@ import custom_splash_attention
 
 
 # Copy from wan_tx_splash_attn.py
-@functools.partial(jax.jit, static_argnames=("mesh", "bqsize", "bkvsize", "bkvcomputesize"))
+@functools.partial(jax.jit, static_argnames=("mesh", "bqsize", "bkvsize", "bkvcomputesize", "bkvcomputesinize"))
 def _tpu_splash_attention(
     query,
     key,
@@ -25,6 +25,7 @@ def _tpu_splash_attention(
     bqsize,
     bkvsize,
     bkvcomputesize,
+    bkvcomputesinize,
     scale=None,
     is_causal=False,
     window_size=None,
@@ -71,7 +72,7 @@ def _tpu_splash_attention(
                 block_kv_compute=min(bkvcomputesize, padded_kv_seq_len),
             )
             splash_kernel = custom_splash_attention.make_splash_mha(
-                block_sizes=block_sizes,
+                block_sizes=block_sizes, bkv_compute_in=bkvcomputesinize
             )
             out = splash_kernel(q_3d_padded, k_3d_padded, v_3d_padded)
             # Remove padding if any
@@ -119,9 +120,11 @@ def main():
     bqsizes = (1512,)
 
     # bqsizes = (600, 630, 675, 700, 720, 756, 840, 900, 945, 1008, 1050, 1080, 1200, 1260, 1350, 1400, 1512, 1575, 1680, 1800, 1890, 2100, 2160, 2520, 2700, 2800, 3024, 3150, 3600, 3780, 4200)
-    bqsizes = range(2048, 4096, 256)
-    bkvsizes = range(2048, 4096, 256)
-    bkvcomputesizes = range(256, 2048, 256)
+    bqsizes = range(2560, 4096, 256)
+    bkvsizes = range(2560, 4096, 256)
+    bkvcomputesizes = range(256, 4096, 256)
+    # bkvcomputesinizes = range(64, 4096, 64)
+    bkvcomputesinizes = range(256, 4096, 256)
     
     # bqsizes = list(range(512, 4096, 128))
     # bkvsizes = (3072,)
@@ -131,9 +134,9 @@ def main():
     # BKVSIZE = 3840
     # BKVCOMPUTESIZE = 256
 
-    # bqsizes = (2048,)
+    # bqsizes = (512,)
     # bkvsizes = (2048,)
-    # bkvcomputesizes = (2048,)
+    # bkvcomputesizes = (256,)
 
     tp_dim = jax.device_count()
     dp_dim = 1
@@ -150,40 +153,45 @@ def main():
             for bqsize in bqsizes:
                 for bkvsize in bkvsizes:
                     for bkvcomputesize in bkvcomputesizes:
-                        if bkvsize < bkvcomputesize or bkvsize % bkvcomputesize != 0:
-                            continue
+                        for bkvcomputesinize in bkvcomputesinizes:
+                            if bkvsize < bkvcomputesize or bkvsize % bkvcomputesize != 0:
+                                continue
 
-                        try:
-                            # pad key value
-                            def pad_to_multiple(x, multiple, axis):
-                                # Pad in kernel
-                                return x
-                                seq_len = x.shape[axis]
-                                pad_len = (multiple - seq_len % multiple) % multiple
-                                if pad_len == 0:
+                            if bkvcomputesize < bkvcomputesinize or bkvcomputesize % bkvcomputesinize != 0:
+                                continue
+
+                            try:
+                                # pad key value
+                                def pad_to_multiple(x, multiple, axis):
+                                    # Pad in kernel
                                     return x
-                                pad_width = [(0, 0)] * x.ndim
-                                pad_width[axis] = (0, pad_len)
-                                return jnp.pad(x, pad_width)
+                                    seq_len = x.shape[axis]
+                                    pad_len = (multiple - seq_len % multiple) % multiple
+                                    if pad_len == 0:
+                                        return x
+                                    pad_width = [(0, 0)] * x.ndim
+                                    pad_width[axis] = (0, pad_len)
+                                    return jnp.pad(x, pad_width)
 
-                            padded_query = pad_to_multiple(query, bqsize, axis=2)
-                            padded_key = pad_to_multiple(key, bkvsize, axis=2)
-                            padded_value = pad_to_multiple(value, bkvsize, axis=2)
+                                padded_query = pad_to_multiple(query, bqsize, axis=2)
+                                padded_key = pad_to_multiple(key, bkvsize, axis=2)
+                                padded_value = pad_to_multiple(value, bkvsize, axis=2)
 
-                            jax.block_until_ready(
-                                _tpu_splash_attention(padded_query, padded_key, padded_value, mesh, bqsize, bkvsize, bkvcomputesize)
-                            )
+                                jax.block_until_ready(
+                                    _tpu_splash_attention(padded_query, padded_key, padded_value, mesh, bqsize, bkvsize, bkvcomputesize, bkvcomputesinize)
+                                )
 
-                            start = time.perf_counter()
-                            jax.block_until_ready(
-                                _tpu_splash_attention(padded_query, padded_key, padded_value, mesh, bqsize, bkvsize, bkvcomputesize)
-                            )
-                            end = time.perf_counter()
-                            print(f"{sp_dim=}, {bqsize}, {bkvsize}, {bkvcomputesize}, {end - start}, {padded_key.shape[2]}")
-                        except KeyboardInterrupt:
-                            raise
-                        except Exception:
-                            continue
+                                start = time.perf_counter()
+                                jax.block_until_ready(
+                                    _tpu_splash_attention(padded_query, padded_key, padded_value, mesh, bqsize, bkvsize, bkvcomputesize, bkvcomputesinize)
+                                )
+                                end = time.perf_counter()
+                                print(f"{sp_dim=}, {bqsize}, {bkvsize}, {bkvcomputesize}, {bkvcomputesinize}, {end - start}, {padded_key.shape[2]}")
+                            except KeyboardInterrupt:
+                                raise
+                            except Exception:
+                                # raise
+                                continue
         break
         # smaller sp_dim better
         tp_dim //= 2

@@ -74,9 +74,13 @@ NUM_STEP = 50
 # BQSIZE =  3024 # 2240 # 3024 #2520
 # BKVSIZE = 2048
 # BKVCOMPUTESIZE = 1024
-BQSIZE =  2816 # 2240 # 3024 #2520
-BKVSIZE = 3072
-BKVCOMPUTESIZE = 768
+# BQSIZE =  2816 # 2240 # 3024 #2520
+# BKVSIZE = 3072
+# BKVCOMPUTESIZE = 768
+BQSIZE =  3328 # 2240 # 3024 #2520
+BKVSIZE = 2816
+BKVCOMPUTESIZE = 256
+BKVCOMPUTEINSIZE = 256
 
 # <--- NEW: Local Attention Window Size Setting --->
 # window_size = (left, right). (128, 0) means each token can attend to itself and the previous 128 tokens.
@@ -98,7 +102,7 @@ LOGICAL_AXIS_RULES = (
 
 USE_K_SMOOTH = True
 
-USE_CUSTOM_ATTENTION = False
+USE_CUSTOM_ATTENTION = True
 
 ####
 
@@ -472,7 +476,7 @@ def _tpu_custom_attention(query, key, value, env, scale=None, is_causal=False, w
                 block_kv_compute=min(BKVCOMPUTESIZE, padded_kv_seq_len),
             )
             splash_kernel = custom_splash_attention.make_splash_mha(
-                block_sizes=block_sizes
+                block_sizes=block_sizes, bkv_compute_in=BKVCOMPUTEINSIZE
             )
             out = splash_kernel(q_3d_padded.astype(jnp.float32), k_3d_padded.astype(jnp.float32), v_3d_padded.astype(jnp.float32)).astype(q_3d_padded.dtype)
             # Remove padding if any
