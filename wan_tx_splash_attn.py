@@ -437,7 +437,9 @@ def _tpu_custom_attention(query, key, value, env, scale=None, is_causal=False, w
         import jax.numpy as jnp
         # Scale the query tensor. This happens on each device with its slice of data.
         scale_factor = 1.0 / math.sqrt(q.shape[-1]) if scale is None else scale
-        q = q * scale_factor
+        # fuse the ops of exp in softmax here
+        _LOG2_E = 1.44269504
+        q = q * scale_factor * _LOG2_E
 
         # Helper to pad to next multiple
         def pad_to_multiple(x, multiple, axis):

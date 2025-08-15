@@ -19,6 +19,9 @@ NUM_SUBLANES = 8
 NN_DIM_NUMBERS = (((1,), (0,)), ((), ()))
 NT_DIM_NUMBERS = (((1,), (1,)), ((), ()))
 
+_LOG2_E = 1.44269504
+_LOG2_E_INV = 1 / _LOG2_E
+
 class _QKVLayout(enum.IntEnum):
   HEAD_DIM_MINOR = enum.auto()
   SEQ_MINOR = enum.auto()
@@ -27,6 +30,9 @@ def _from_head_minor(vals: tuple[Any, ...], layout: _QKVLayout):
   if layout == _QKVLayout.HEAD_DIM_MINOR:
     return vals
   return (*vals[:-2], vals[-1], vals[-2])
+
+def exp2(x: jax.Array) -> jax.Array:
+  return jnp.power(2.0, x)
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class _BlockSizes:
@@ -556,13 +562,14 @@ def _flash_attention_kernel(
       m_next = jnp.maximum(m_prev, m_curr)
       assert m_next.shape == (NUM_SUBLANES, bq)
 
-      s_curr = (jnp.exp(qk[i:i+step] - m_next[0:1]))
+      # the exp two ops: vmul and vpow. Fuse the vmul outside of kernel.
+      s_curr = (exp2(qk[i:i+step] - m_next[0:1]))
       # assert s_curr.shape == (bkv_compute, bq)
 
       l_curr = s_curr.sum(axis=0, keepdims=True)
       assert l_curr.shape == (1, bq)
 
-      alpha = jnp.exp(m_prev - m_next)
+      alpha = jnp.exp2(m_prev - m_next)
       l_next = l_curr + alpha * l_prev
 
       sv_dims = (((0,), (0,)), ((), ()))
