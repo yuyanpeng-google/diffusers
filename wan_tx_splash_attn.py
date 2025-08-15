@@ -785,8 +785,8 @@ def main():
   print(f"{tp_dim=}, {dp_dim=}, {sp_dim=}")
      
   # mesh = jax.make_mesh((len(jax.devices()), 1), (axis, 'fsdp'))
-  mesh_devices = mesh_utils.create_device_mesh((tp_dim, dp_dim, sp_dim), allow_split_physical_axes=True)
-  mesh = Mesh(mesh_devices, (axis,'dp','sp'))
+  mesh_devices = mesh_utils.create_device_mesh((dp_dim, sp_dim, tp_dim), allow_split_physical_axes=True)
+  mesh = Mesh(mesh_devices, ('dp','sp', axis))
 
   env.default_device_or_sharding = NamedSharding(mesh, P())
   env._mesh = mesh
