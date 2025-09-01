@@ -2,7 +2,7 @@
 pip install -e .
 
 # Model and accelerator
-pip install transformers accelerate
+pip install transformers==4.52.4 accelerate==1.7.0
 
 # Wan2.1 specific dependencies
 pip install ftfy imageio imageio-ffmpeg

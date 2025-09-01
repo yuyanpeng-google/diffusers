@@ -1,12 +1,7 @@
-Original readme moved to README_original.md
+#!/bin/bash
 
-# Recipe
+set -ex
 
-command also in `command.sh`
-
-1. Export the environment of GCP project
-* Fill the PROJECT_ID and TPU_NAME
-```
 ### 1. export env of gcp ###
 
 export PROJECT_ID=<project_id>
@@ -14,19 +9,15 @@ export TPU_NAME=<tpu_name>
 export ZONE=asia-northeast1-b
 export ACCELERATOR_TYPE=v6e-16
 export RUNTIME_VERSION=v2-alpha-tpuv6e
-```
 
-2. Create the v6e-16 tpu vms on GCP
-```
+### 2. create vm ###
+
 gcloud compute tpus tpu-vm create ${TPU_NAME}  \
   --zone=${ZONE} \
   --project=${PROJECT_ID} \
   --accelerator-type=${ACCELERATOR_TYPE}  \
   --version=${RUNTIME_VERSION} 
-```
 
-3. Prepare the python env on each tpu vms
-```
 ### 3. prepare env on each host ###
 
 run()
@@ -52,10 +43,7 @@ true
 "
 
 run "${SETUP_COMMAND}"
-```
 
-4. Run wan2.1 pipeline to generate the videos
-```
 ### 4. run wan2.1 pipeline ###
 
 run()
@@ -81,46 +69,9 @@ python wan_tx_splash_attn.py && \
 true
 "
 run "${RUN_COMMAND}"
-```
 
-5. See the results in stdout
-```
-...
-output video done. 20250901_071621.mp4
-...
-100%|██████████| 50/50 [02:12<00:00, 2.64s/it]
-Iteration 0 BKVCOMPUTESIZE=1024 BKVSIZE=2048, BQSIZE=3024: 140.745333s
-DONE
-```
+### 5. download generated video ###
 
-6. Use scp download generated videos
-```
-VIDEO_NAME=20250901_071621.mp4 # from the 5 stdout
+VIDEO_NAME=<from_run_command_stdout>
 
 gcloud compute tpus tpu-vm scp --zone "${ZONE}" "${TPU_NAME}:~/diffusers/${VIDEO_NAME}" . --project "${PROJECT_ID}" --worker=0
-```
-
-
-# Install
-
-Install dependencies, setup virtual env first if required.
-
-```sh
-sh -ex setup-dep.sh
-```
-
-To run:
-
-```
-python wan_tx_splash_attn.py
-```
-
-### Result
-
-`python wan_tx_splash_attn.py`
-* v6e-16
-  * 100%|██████████| 50/50 [02:12<00:00, 2.64s/it]
-  * Iteration 0 BKVCOMPUTESIZE=1024 BKVSIZE=2048, BQSIZE=3024: 140.745333s
-  * DONE
-
-
