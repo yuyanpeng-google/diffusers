@@ -14,6 +14,8 @@ import torch
 import numpy as np
 from diffusers import WanImageToVideoPipeline
 from diffusers.utils import export_to_video, load_image
+from diffusers.models.autoencoders import vae as diffusers_vae
+from diffusers.models import modeling_outputs as diffusers_modeling_outputs
 
 from transformers import modeling_outputs
 
@@ -162,31 +164,31 @@ VAE_SHARDINGS = {
 # 'quant_conv.bias': (), # (torch.Size([32]), torch.bfloat16)
 # 'post_quant_conv.weight': (), # (torch.Size([16, 16, 1, 1, 1]), torch.bfloat16)
 # 'post_quant_conv.bias': (), # (torch.Size([16]), torch.bfloat16)
-# 'decoder.conv_in.weight': (), # (torch.Size([384, 16, 3, 3, 3]), torch.bfloat16)
-# 'decoder.conv_in.bias': (), # (torch.Size([384]), torch.bfloat16)
+'decoder.conv_in.weight': ('tp',), # (torch.Size([384, 16, 3, 3, 3]), torch.bfloat16)
+'decoder.conv_in.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
 # 'decoder.mid_block.attentions.*.norm.gamma': (), # (torch.Size([384, 1, 1]), torch.bfloat16)
-# 'decoder.mid_block.attentions.*.to_qkv.weight': (), # (torch.Size([1152, 384, 1, 1]), torch.bfloat16)
-# 'decoder.mid_block.attentions.*.to_qkv.bias': (), # (torch.Size([1152]), torch.bfloat16)
-# 'decoder.mid_block.attentions.*.proj.weight': (), # (torch.Size([384, 384, 1, 1]), torch.bfloat16)
+'decoder.mid_block.attentions.*.to_qkv.weight': ('tp',), # (torch.Size([1152, 384, 1, 1]), torch.bfloat16)
+'decoder.mid_block.attentions.*.to_qkv.bias': ('tp',), # (torch.Size([1152]), torch.bfloat16)
+'decoder.mid_block.attentions.*.proj.weight': (None, 'tp',), # (torch.Size([384, 384, 1, 1]), torch.bfloat16)
 # 'decoder.mid_block.attentions.*.proj.bias': (), # (torch.Size([384]), torch.bfloat16)
 # 'decoder.mid_block.resnets.*.norm1.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-# 'decoder.mid_block.resnets.*.conv1.weight': (), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-# 'decoder.mid_block.resnets.*.conv1.bias': (), # (torch.Size([384]), torch.bfloat16)
+'decoder.mid_block.resnets.*.conv1.weight': ('tp',), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+'decoder.mid_block.resnets.*.conv1.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
 # 'decoder.mid_block.resnets.*.norm2.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-# 'decoder.mid_block.resnets.*.conv2.weight': (), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-# 'decoder.mid_block.resnets.*.conv2.bias': (), # (torch.Size([384]), torch.bfloat16)
+'decoder.mid_block.resnets.*.conv2.weight': ('tp',), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+'decoder.mid_block.resnets.*.conv2.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
 # 'decoder.up_blocks.*.resnets.*.norm1.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
-# 'decoder.up_blocks.*.resnets.*.conv1.weight': (), # (torch.Size([96, 96, 3, 3, 3]), torch.bfloat16)
-# 'decoder.up_blocks.*.resnets.*.conv1.bias': (), # (torch.Size([96]), torch.bfloat16)
+'decoder.up_blocks.*.resnets.*.conv1.weight': ('tp',), # (torch.Size([96, 96, 3, 3, 3]), torch.bfloat16)
+'decoder.up_blocks.*.resnets.*.conv1.bias': ('tp',), # (torch.Size([96]), torch.bfloat16)
 # 'decoder.up_blocks.*.resnets.*.norm2.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
-# 'decoder.up_blocks.*.resnets.*.conv2.weight': (), # (torch.Size([96, 96, 3, 3, 3]), torch.bfloat16)
-# 'decoder.up_blocks.*.resnets.*.conv2.bias': (), # (torch.Size([96]), torch.bfloat16)
-# 'decoder.up_blocks.*.upsamplers.*.resample.*.weight': (), # (torch.Size([96, 192, 3, 3]), torch.bfloat16)
-# 'decoder.up_blocks.*.upsamplers.*.resample.*.bias': (), # (torch.Size([96]), torch.bfloat16)
-# 'decoder.up_blocks.*.upsamplers.*.time_conv.weight': (), # (torch.Size([768, 384, 3, 1, 1]), torch.bfloat16)
-# 'decoder.up_blocks.*.upsamplers.*.time_conv.bias': (), # (torch.Size([768]), torch.bfloat16)
-# 'decoder.up_blocks.*.resnets.*.conv_shortcut.weight': (), # (torch.Size([384, 192, 1, 1, 1]), torch.bfloat16)
-# 'decoder.up_blocks.*.resnets.*.conv_shortcut.bias': (), # (torch.Size([384]), torch.bfloat16)
+'decoder.up_blocks.*.resnets.*.conv2.weight': ('tp',), # (torch.Size([96, 96, 3, 3, 3]), torch.bfloat16)
+'decoder.up_blocks.*.resnets.*.conv2.bias': ('tp',), # (torch.Size([96]), torch.bfloat16)
+'decoder.up_blocks.*.upsamplers.*.resample.*.weight': ('tp',), # (torch.Size([96, 192, 3, 3]), torch.bfloat16)
+'decoder.up_blocks.*.upsamplers.*.resample.*.bias': ('tp',), # (torch.Size([96]), torch.bfloat16)
+'decoder.up_blocks.*.upsamplers.*.time_conv.weight': ('tp',), # (torch.Size([768, 384, 3, 1, 1]), torch.bfloat16)
+'decoder.up_blocks.*.upsamplers.*.time_conv.bias': ('tp',), # (torch.Size([768]), torch.bfloat16)
+'decoder.up_blocks.*.resnets.*.conv_shortcut.weight': ('tp',), # (torch.Size([384, 192, 1, 1, 1]), torch.bfloat16)
+'decoder.up_blocks.*.resnets.*.conv_shortcut.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
 # 'decoder.norm_out.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
 # 'decoder.conv_out.weight': (), # (torch.Size([3, 96, 3, 3, 3]), torch.bfloat16)
 # 'decoder.conv_out.bias': (), # (torch.Size([3]), torch.bfloat16)
@@ -261,6 +263,56 @@ def _move_module(env, module):
         state_dict = module.state_dict()
         state_dict = env.to_xla(state_dict)
         module.load_state_dict(state_dict, assign=True)
+
+
+# register non-jax type
+def _flatten_model_output(obj):
+    return obj.to_tuple(), type(obj)
+
+
+def _unflatten_model_output(aux, children):
+    return aux(*children)
+
+
+# For text_embedding
+jax.tree_util.register_pytree_node(
+    modeling_outputs.BaseModelOutputWithPastAndCrossAttentions,
+    _flatten_model_output,
+    _unflatten_model_output,
+)
+
+# For vae decode
+jax.tree_util.register_pytree_node(
+    diffusers_vae.DecoderOutput,
+    _flatten_model_output,
+    _unflatten_model_output,
+)
+
+# For vae encode
+# jax.tree_util.register_pytree_node(
+#     diffusers_modeling_outputs.AutoencoderKLOutput,
+#     _flatten_model_output,
+#     _unflatten_model_output,
+# )
+
+
+# def _flatten_diagonal_gaussian_distribution(
+#     obj: diffusers_vae.DiagonalGaussianDistribution,
+# ):
+#     return (obj.parameters, obj.deterministic), type(obj)
+
+
+# def _unflatten_diagonal_gaussian_distribution(
+#     aux, children
+# ) -> diffusers_vae.DiagonalGaussianDistribution:
+#     return aux(*children)
+
+
+# jax.tree_util.register_pytree_node(
+#     diffusers_vae.DiagonalGaussianDistribution,
+#     _flatten_diagonal_gaussian_distribution,
+#     _unflatten_diagonal_gaussian_distribution,
+# )
 
 
 class Args(argparse.Namespace):
@@ -362,19 +414,6 @@ def main(args: Args):
     # mesh_devices = mesh_utils.create_device_mesh((dp_dim, sp_dim, tp_dim), allow_split_physical_axes=True)
     # mesh = Mesh(mesh_devices, ('dp','sp', axis))
 
-    # register non-jax type
-    def _flatten_model_output(obj):
-        return obj.to_tuple(), type(obj)
-
-    def _unflatten_model_output(aux, children):
-        return aux(*children)
-
-    jax.tree_util.register_pytree_node(
-        modeling_outputs.BaseModelOutputWithPastAndCrossAttentions,
-        _flatten_model_output,
-        _unflatten_model_output,
-    )
-
     # Workaround override function to use tpu. Better handle it in torchax
     _overide_op_definition(
         env, torch.nn.functional.conv2d, functools.partial(_torch_conv2d, env=env)
@@ -418,10 +457,12 @@ def main(args: Args):
                 pipe.transformer_2.buffers, TRANSFORMER_SHARDINGS, mesh
             )
 
-        # TODO: RESOURCE_EXHAUSTED while compile vae
+        # TODO: jit encode function
         vae_options = torchax.CompileOptions(
-            # methods_to_compile=['decode'],
-            # jax_jit_kwargs={"static_argnames": ("return_dict",)}
+            # methods_to_compile=['encode', 'decode'],
+            methods_to_compile=["decode"],
+            # methods_to_compile=['_encode'],
+            jax_jit_kwargs={"static_argnames": ("return_dict",)},
         )
         with perf_time("  Move vae"):
             _move_module(env, pipe.vae)
