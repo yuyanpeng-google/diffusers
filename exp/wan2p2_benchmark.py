@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime
 import functools
+import math
 import re
 import time
 from contextlib import contextmanager
@@ -9,6 +10,7 @@ import jax
 from jax.sharding import NamedSharding, PartitionSpec as P
 from jax.sharding import Mesh
 from jax.experimental import mesh_utils
+from jax.experimental.pallas.ops.tpu import splash_attention
 
 import torch
 import numpy as np
@@ -21,7 +23,11 @@ from transformers import modeling_outputs
 
 import torchax
 from torchax.ops import jaten
+from torchax.ops import jtorch
 from torchax.ops import ops_registry
+
+# Local file
+import custom_splash_attention
 
 
 SIZE_CONFIGS = {
@@ -195,6 +201,11 @@ VAE_SHARDINGS = {
 }
 # fmt: on
 
+BQSIZE = 3328
+BKVSIZE = 2816
+BKVCOMPUTESIZE = 256
+BKVCOMPUTEINSIZE = 256
+
 
 @contextmanager
 def perf_time(name: str):
@@ -263,6 +274,138 @@ def _move_module(env, module):
         state_dict = module.state_dict()
         state_dict = env.to_xla(state_dict)
         module.load_state_dict(state_dict, assign=True)
+
+
+### Flash Attention
+
+
+def _tpu_custom_attention(query, key, value, mesh, scale=None):
+    # The function that will be sharded across devices.
+    def _attention_on_slices(q, k, v):
+        import jax.numpy as jnp
+
+        # Scale the query tensor. This happens on each device with its slice of data.
+        scale_factor = 1.0 / math.sqrt(q.shape[-1]) if scale is None else scale
+        # fuse the ops of exp in softmax here
+        _LOG2_E = 1.44269504
+        q = q * scale_factor * _LOG2_E
+
+        # Helper to pad to next multiple
+        def pad_to_multiple(x, multiple, axis):
+            seq_len = x.shape[axis]
+            pad_len = (multiple - seq_len % multiple) % multiple
+            if pad_len == 0:
+                return x, seq_len
+            pad_width = [(0, 0)] * x.ndim
+            pad_width[axis] = (0, pad_len)
+            return jnp.pad(x, pad_width), seq_len
+
+        # This function operates on a single item from the batch.
+        def kernel_3d(q_3d, k_3d, v_3d):
+            q_seq_len = q_3d.shape[1]
+            kv_seq_len = k_3d.shape[1]
+            num_heads_on_device = q_3d.shape[0]
+
+            # self attention
+            if k_3d.shape[1] > 10000:
+                # Pad q, k, v to next multiple of BQSIZE/BKVSIZE
+                q_3d_padded, q_orig_len = pad_to_multiple(q_3d, BQSIZE, axis=1)
+                k_3d_padded, k_orig_len = pad_to_multiple(k_3d, BKVSIZE, axis=1)
+                v_3d_padded, v_orig_len = pad_to_multiple(v_3d, BKVSIZE, axis=1)
+            else:
+                # do not padding on kv in cross attention. kv length is 512
+                q_3d_padded, q_orig_len = pad_to_multiple(q_3d, BQSIZE, axis=1)
+                k_3d_padded, k_orig_len = k_3d, k_3d.shape[1]
+                v_3d_padded, v_orig_len = v_3d, v_3d.shape[1]
+
+            padded_q_seq_len = q_3d_padded.shape[1]
+            padded_kv_seq_len = k_3d_padded.shape[1]
+
+            block_sizes = splash_attention.BlockSizes(
+                block_q=min(BQSIZE, padded_q_seq_len),
+                block_kv=min(BKVSIZE, padded_kv_seq_len),
+                block_kv_compute=min(BKVCOMPUTESIZE, padded_kv_seq_len),
+            )
+            splash_kernel = custom_splash_attention.make_splash_mha(
+                block_sizes=block_sizes, bkv_compute_in=BKVCOMPUTEINSIZE
+            )
+            out = splash_kernel(q_3d_padded, k_3d_padded, v_3d_padded).astype(
+                q_3d_padded.dtype
+            )
+            # Remove padding if any
+            out = jnp.swapaxes(out, 1, 2)
+            return out[:, :q_orig_len, ...]
+
+        # Map the kernel over the batch dimension.
+        vmapped_kernel = jax.vmap(kernel_3d, in_axes=(0, 0, 0), out_axes=0)
+        return vmapped_kernel(q, k, v)
+
+    # Sharded case for Transformer. Split along the heads axis.
+    # Attn1 self attention, key length is long.
+    print(f"[DEBUG] {query.shape=}, {key.shape=}")
+    if key.shape[2] > 10000 and key.shape[1] % mesh.axis_sizes[mesh.axis_names.index('tp')] == 0:
+        print("[DEBUG] cp")
+        q_partition_spec = P(None, "tp", None, None)
+        kv_partition_spec = P(None, "tp", None, None)
+    elif query.shape[2] % mesh.axis_sizes[mesh.axis_names.index('tp')] == 0:
+        print("[DEBUG] sp")
+        # Attn2 which is cross attention, kv sequence is shorter. All gather the key value cost less.
+        q_partition_spec = P(None, None, ("tp",), None)
+        kv_partition_spec = P(None, None, None, None)
+    else:
+        print("[DEBUG] replicate")
+        q_partition_spec = P()
+        kv_partition_spec = P()
+
+    # ALWAYS use shard_map. The partition_spec will control the behavior.
+    sharded_fn = jax.shard_map(
+        _attention_on_slices,
+        mesh=mesh,
+        in_specs=(q_partition_spec, kv_partition_spec, kv_partition_spec),
+        out_specs=q_partition_spec,
+        check_vma=False,
+    )
+    out = sharded_fn(query, key, value)
+    return out
+
+
+def _scaled_dot_product_attention(
+    query,
+    key,
+    value,
+    attn_mask=None,
+    dropout_p=0.0,
+    is_causal=False,
+    scale=None,
+    enable_gqa=False,
+    *,
+    env,
+    mesh,
+) -> torch.Tensor:
+    # if env.config.use_tpu_splash_attention:
+    if True:
+        assert attn_mask is None
+        assert dropout_p == 0.0
+        assert is_causal is False
+        assert enable_gqa is False
+        assert scale is None
+        jquery, jkey, jvalue = env.t2j_iso((query, key, value))
+        jquery = jax.lax.with_sharding_constraint(jquery, P(None, None, "tp", None))
+        jkey = jax.lax.with_sharding_constraint(jkey, P(None, None, "tp", None))
+        jvalue = jax.lax.with_sharding_constraint(jvalue, P(None, None, "tp", None))
+        res = _tpu_custom_attention(
+            jquery,
+            jkey,
+            jvalue,
+            mesh,
+            scale=scale,
+        )
+        res = jax.lax.with_sharding_constraint(res, P(None, None, "tp", None))
+        return env.j2t_iso(res)
+
+    return jtorch._sdpa_reference(
+        query, key, value, attn_mask, dropout_p, is_causal, scale, enable_gqa
+    )
 
 
 # register non-jax type
@@ -409,6 +552,7 @@ def main(args: Args):
     # enable torchax wrap jax array into torch array
     torchax.enable_globally()
     env = torchax.default_env()
+    assert isinstance(env, torchax.tensor.Environment)
 
     mesh = jax.make_mesh((len(jax.devices()),), ("tp",))
     # mesh_devices = mesh_utils.create_device_mesh((dp_dim, sp_dim, tp_dim), allow_split_physical_axes=True)
@@ -417,6 +561,11 @@ def main(args: Args):
     # Workaround override function to use tpu. Better handle it in torchax
     _overide_op_definition(
         env, torch.nn.functional.conv2d, functools.partial(_torch_conv2d, env=env)
+    )
+    _overide_op_definition(
+        env,
+        torch.nn.functional.scaled_dot_product_attention,
+        functools.partial(_scaled_dot_product_attention, env=env, mesh=mesh),
     )
 
     # Put weights into tpu
