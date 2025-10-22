@@ -16,7 +16,10 @@ import custom_splash_attention
 
 
 # Copy from wan_tx_splash_attn.py
-@functools.partial(jax.jit, static_argnames=("mesh", "bqsize", "bkvsize", "bkvcomputesize", "bkvcomputesinize"))
+@functools.partial(
+    jax.jit,
+    static_argnames=("mesh", "bqsize", "bkvsize", "bkvcomputesize", "bkvcomputesinize"),
+)
 def _tpu_splash_attention(
     query,
     key,
@@ -42,6 +45,7 @@ def _tpu_splash_attention(
         def pad_to_multiple2(x, multiple, axis):
             # For try pad outside
             return x, x.shape[axis]
+
         # Helper to pad to next multiple
         def pad_to_multiple(x, multiple, axis):
             seq_len = x.shape[axis]
@@ -62,7 +66,7 @@ def _tpu_splash_attention(
             q_3d_padded, q_orig_len = pad_to_multiple(q_3d, bqsize, axis=1)
             k_3d_padded, k_orig_len = pad_to_multiple(k_3d, bkvsize, axis=1)
             v_3d_padded, v_orig_len = pad_to_multiple(v_3d, bkvsize, axis=1)
-            
+
             padded_q_seq_len = q_3d_padded.shape[1]
             padded_kv_seq_len = k_3d_padded.shape[1]
 
@@ -125,7 +129,7 @@ def main():
     bkvcomputesizes = range(256, 4096, 256)
     # bkvcomputesinizes = range(64, 4096, 64)
     bkvcomputesinizes = range(256, 4096, 256)
-    
+
     # bqsizes = list(range(512, 4096, 128))
     # bkvsizes = (3072,)
     # bkvcomputesizes = (1024,)
@@ -143,21 +147,35 @@ def main():
     sp_dim = 1
     print("sp, bqsize, bkvsize, bkvcomputesize, time (s), padded_key_size")
     while tp_dim >= 1:
-        mesh_devices = mesh_utils.create_device_mesh((tp_dim, dp_dim, sp_dim), allow_split_physical_axes=True)
-        mesh = Mesh(mesh_devices, ('axis','dp','sp'))
+        mesh_devices = mesh_utils.create_device_mesh(
+            (tp_dim, dp_dim, sp_dim), allow_split_physical_axes=True
+        )
+        mesh = Mesh(mesh_devices, ("axis", "dp", "sp"))
 
-        query = jax.device_put(query, NamedSharding(mesh, P('dp', None, ('axis', 'sp'), None)))
-        key = jax.device_put(key, NamedSharding(mesh, P('dp', None, ('axis', 'sp'), None)))
-        value = jax.device_put(value, NamedSharding(mesh, P('dp', None, ('axis', 'sp'), None)))
+        query = jax.device_put(
+            query, NamedSharding(mesh, P("dp", None, ("axis", "sp"), None))
+        )
+        key = jax.device_put(
+            key, NamedSharding(mesh, P("dp", None, ("axis", "sp"), None))
+        )
+        value = jax.device_put(
+            value, NamedSharding(mesh, P("dp", None, ("axis", "sp"), None))
+        )
         with mesh:
             for bqsize in bqsizes:
                 for bkvsize in bkvsizes:
                     for bkvcomputesize in bkvcomputesizes:
                         for bkvcomputesinize in bkvcomputesinizes:
-                            if bkvsize < bkvcomputesize or bkvsize % bkvcomputesize != 0:
+                            if (
+                                bkvsize < bkvcomputesize
+                                or bkvsize % bkvcomputesize != 0
+                            ):
                                 continue
 
-                            if bkvcomputesize < bkvcomputesinize or bkvcomputesize % bkvcomputesinize != 0:
+                            if (
+                                bkvcomputesize < bkvcomputesinize
+                                or bkvcomputesize % bkvcomputesinize != 0
+                            ):
                                 continue
 
                             try:
@@ -178,15 +196,35 @@ def main():
                                 padded_value = pad_to_multiple(value, bkvsize, axis=2)
 
                                 jax.block_until_ready(
-                                    _tpu_splash_attention(padded_query, padded_key, padded_value, mesh, bqsize, bkvsize, bkvcomputesize, bkvcomputesinize)
+                                    _tpu_splash_attention(
+                                        padded_query,
+                                        padded_key,
+                                        padded_value,
+                                        mesh,
+                                        bqsize,
+                                        bkvsize,
+                                        bkvcomputesize,
+                                        bkvcomputesinize,
+                                    )
                                 )
 
                                 start = time.perf_counter()
                                 jax.block_until_ready(
-                                    _tpu_splash_attention(padded_query, padded_key, padded_value, mesh, bqsize, bkvsize, bkvcomputesize, bkvcomputesinize)
+                                    _tpu_splash_attention(
+                                        padded_query,
+                                        padded_key,
+                                        padded_value,
+                                        mesh,
+                                        bqsize,
+                                        bkvsize,
+                                        bkvcomputesize,
+                                        bkvcomputesinize,
+                                    )
                                 )
                                 end = time.perf_counter()
-                                print(f"{sp_dim=}, {bqsize}, {bkvsize}, {bkvcomputesize}, {bkvcomputesinize}, {end - start}, {padded_key.shape[2]}")
+                                print(
+                                    f"{sp_dim=}, {bqsize}, {bkvsize}, {bkvcomputesize}, {bkvcomputesinize}, {end - start}, {padded_key.shape[2]}"
+                                )
                             except KeyboardInterrupt:
                                 raise
                             except Exception:
@@ -196,6 +234,7 @@ def main():
         # smaller sp_dim better
         tp_dim //= 2
         sp_dim *= 2
+
 
 if __name__ == "__main__":
     main()
