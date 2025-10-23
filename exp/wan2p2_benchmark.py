@@ -619,9 +619,7 @@ def main(args: Args):
             pipe.vae.params = _shard_weight_dict(pipe.vae.params, VAE_SHARDINGS, mesh)
             pipe.vae.buffers = _shard_weight_dict(pipe.vae.buffers, VAE_SHARDINGS, mesh)
 
-    image = load_image(
-        "https://huggingface.co/datasets/YiYiXu/testing-images/resolve/main/wan_i2v_input.JPG"
-    )
+    image = load_image(args.image)
     max_area = MAX_AREA_CONFIGS[args.size]
     aspect_ratio = image.height / image.width
     mod_value = pipe.vae_scale_factor_spatial * pipe.transformer.config.patch_size[1]
@@ -687,4 +685,5 @@ def main(args: Args):
 
 if __name__ == "__main__":
     args = parse_args()
+    print(args)
     main(args)
