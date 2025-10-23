@@ -27,6 +27,9 @@ from ..modeling_outputs import AutoencoderKLOutput
 from ..modeling_utils import ModelMixin
 from .vae import DecoderOutput, DiagonalGaussianDistribution
 
+import jax
+from torchax import interop
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -1163,6 +1166,10 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                     feat_idx=self._enc_conv_idx,
                 )
                 out = torch.cat([out, out_], 2)
+            # Prevent jit optmization run multi-step loops simultaneous and cause OOM.
+            # Add the dependency next x to current out
+            x, out = jax.lax.optimization_barrier(interop.jax_view((x, out)))
+            x, out = interop.torch_view((x, out))
 
         enc = self.quant_conv(out)
         self.clear_cache()
@@ -1184,6 +1191,7 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 The latent representations of the encoded videos. If `return_dict` is True, a
                 [`~models.autoencoder_kl.AutoencoderKLOutput`] is returned, otherwise a plain `tuple` is returned.
         """
+        print(f"[DEBUG] {x.shape=}, {x.dtype=}")
         if self.use_slicing and x.shape[0] > 1:
             encoded_slices = [self._encode(x_slice) for x_slice in x.split(1)]
             h = torch.cat(encoded_slices)
@@ -1214,6 +1222,10 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             else:
                 out_ = self.decoder(x[:, :, i : i + 1, :, :], feat_cache=self._feat_map, feat_idx=self._conv_idx)
                 out = torch.cat([out, out_], 2)
+            # Prevent jit optmization run multi-step loops simultaneous and cause OOM.
+            # Add the dependency next x to current out
+            x, out = jax.lax.optimization_barrier(interop.jax_view((x, out)))
+            x, out = interop.torch_view((x, out))
 
         if self.config.patch_size is not None:
             out = unpatchify(out, patch_size=self.config.patch_size)
@@ -1241,6 +1253,7 @@ class AutoencoderKLWan(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 If return_dict is True, a [`~models.vae.DecoderOutput`] is returned, otherwise a plain `tuple` is
                 returned.
         """
+        print(f"[DEBUG] {z.shape=}, {z.dtype=}")
         if self.use_slicing and z.shape[0] > 1:
             decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
             decoded = torch.cat(decoded_slices)

@@ -138,33 +138,33 @@ TRANSFORMER_SHARDINGS = {
 }
 
 VAE_SHARDINGS = {
-# 'encoder.conv_in.weight': (), # (torch.Size([96, 3, 3, 3, 3]), torch.bfloat16)
-# 'encoder.conv_in.bias': (), # (torch.Size([96]), torch.bfloat16)
+'encoder.conv_in.weight': ('tp',), # (torch.Size([96, 3, 3, 3, 3]), torch.bfloat16)
+'encoder.conv_in.bias': ('tp',), # (torch.Size([96]), torch.bfloat16)
 # 'encoder.down_blocks.*.norm1.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-# 'encoder.down_blocks.*.conv1.weight': (), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-# 'encoder.down_blocks.*.conv1.bias': (), # (torch.Size([384]), torch.bfloat16)
+'encoder.down_blocks.*.conv1.weight': ('tp',), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+'encoder.down_blocks.*.conv1.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
 # 'encoder.down_blocks.*.norm2.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-# 'encoder.down_blocks.*.conv2.weight': (), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-# 'encoder.down_blocks.*.conv2.bias': (), # (torch.Size([384]), torch.bfloat16)
-# 'encoder.down_blocks.*.resample.*.weight': (), # (torch.Size([384, 384, 3, 3]), torch.bfloat16)
-# 'encoder.down_blocks.*.resample.*.bias': (), # (torch.Size([384]), torch.bfloat16)
-# 'encoder.down_blocks.*.conv_shortcut.weight': (), # (torch.Size([384, 192, 1, 1, 1]), torch.bfloat16)
-# 'encoder.down_blocks.*.conv_shortcut.bias': (), # (torch.Size([384]), torch.bfloat16)
-# 'encoder.down_blocks.*.time_conv.weight': (), # (torch.Size([384, 384, 3, 1, 1]), torch.bfloat16)
-# 'encoder.down_blocks.*.time_conv.bias': (), # (torch.Size([384]), torch.bfloat16)
+'encoder.down_blocks.*.conv2.weight': ('tp',), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+'encoder.down_blocks.*.conv2.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
+'encoder.down_blocks.*.resample.*.weight': ('tp',), # (torch.Size([384, 384, 3, 3]), torch.bfloat16)
+'encoder.down_blocks.*.resample.*.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
+'encoder.down_blocks.*.conv_shortcut.weight': ('tp',), # (torch.Size([384, 192, 1, 1, 1]), torch.bfloat16)
+'encoder.down_blocks.*.conv_shortcut.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
+'encoder.down_blocks.*.time_conv.weight': ('tp',), # (torch.Size([384, 384, 3, 1, 1]), torch.bfloat16)
+'encoder.down_blocks.*.time_conv.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
 # 'encoder.mid_block.attentions.*.norm.gamma': (), # (torch.Size([384, 1, 1]), torch.bfloat16)
-# 'encoder.mid_block.attentions.*.to_qkv.weight': (), # (torch.Size([1152, 384, 1, 1]), torch.bfloat16)
-# 'encoder.mid_block.attentions.*.to_qkv.bias': (), # (torch.Size([1152]), torch.bfloat16)
-# 'encoder.mid_block.attentions.*.proj.weight': (), # (torch.Size([384, 384, 1, 1]), torch.bfloat16)
+'encoder.mid_block.attentions.*.to_qkv.weight': ('tp',), # (torch.Size([1152, 384, 1, 1]), torch.bfloat16)
+'encoder.mid_block.attentions.*.to_qkv.bias': ('tp',), # (torch.Size([1152]), torch.bfloat16)
+'encoder.mid_block.attentions.*.proj.weight': (None, 'tp',), # (torch.Size([384, 384, 1, 1]), torch.bfloat16)
 # 'encoder.mid_block.attentions.*.proj.bias': (), # (torch.Size([384]), torch.bfloat16)
 # 'encoder.mid_block.resnets.*.norm1.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-# 'encoder.mid_block.resnets.*.conv1.weight': (), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-# 'encoder.mid_block.resnets.*.conv1.bias': (), # (torch.Size([384]), torch.bfloat16)
+'encoder.mid_block.resnets.*.conv1.weight': ('tp',), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+'encoder.mid_block.resnets.*.conv1.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
 # 'encoder.mid_block.resnets.*.norm2.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-# 'encoder.mid_block.resnets.*.conv2.weight': (), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-# 'encoder.mid_block.resnets.*.conv2.bias': (), # (torch.Size([384]), torch.bfloat16)
+'encoder.mid_block.resnets.*.conv2.weight': ('tp',), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+'encoder.mid_block.resnets.*.conv2.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
 # 'encoder.norm_out.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-# 'encoder.conv_out.weight': (), # (torch.Size([32, 384, 3, 3, 3]), torch.bfloat16)
+'encoder.conv_out.weight': (None, 'tp',), # (torch.Size([32, 384, 3, 3, 3]), torch.bfloat16)
 # 'encoder.conv_out.bias': (), # (torch.Size([32]), torch.bfloat16)
 # 'quant_conv.weight': (), # (torch.Size([32, 32, 1, 1, 1]), torch.bfloat16)
 # 'quant_conv.bias': (), # (torch.Size([32]), torch.bfloat16)
@@ -196,7 +196,7 @@ VAE_SHARDINGS = {
 'decoder.up_blocks.*.resnets.*.conv_shortcut.weight': ('tp',), # (torch.Size([384, 192, 1, 1, 1]), torch.bfloat16)
 'decoder.up_blocks.*.resnets.*.conv_shortcut.bias': ('tp',), # (torch.Size([384]), torch.bfloat16)
 # 'decoder.norm_out.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
-# 'decoder.conv_out.weight': (), # (torch.Size([3, 96, 3, 3, 3]), torch.bfloat16)
+'decoder.conv_out.weight': (None, 'tp'), # (torch.Size([3, 96, 3, 3, 3]), torch.bfloat16)
 # 'decoder.conv_out.bias': (), # (torch.Size([3]), torch.bfloat16)
 }
 # fmt: on
@@ -343,11 +343,14 @@ def _tpu_custom_attention(query, key, value, mesh, scale=None):
     # Sharded case for Transformer. Split along the heads axis.
     # Attn1 self attention, key length is long.
     print(f"[DEBUG] {query.shape=}, {key.shape=}")
-    if key.shape[2] > 10000 and key.shape[1] % mesh.axis_sizes[mesh.axis_names.index('tp')] == 0:
+    if (
+        key.shape[2] > 10000
+        and key.shape[1] % mesh.axis_sizes[mesh.axis_names.index("tp")] == 0
+    ):
         print("[DEBUG] cp")
         q_partition_spec = P(None, "tp", None, None)
         kv_partition_spec = P(None, "tp", None, None)
-    elif query.shape[2] % mesh.axis_sizes[mesh.axis_names.index('tp')] == 0:
+    elif query.shape[2] % mesh.axis_sizes[mesh.axis_names.index("tp")] == 0:
         print("[DEBUG] sp")
         # Attn2 which is cross attention, kv sequence is shorter. All gather the key value cost less.
         q_partition_spec = P(None, None, ("tp",), None)
@@ -432,30 +435,44 @@ jax.tree_util.register_pytree_node(
 )
 
 # For vae encode
-# jax.tree_util.register_pytree_node(
-#     diffusers_modeling_outputs.AutoencoderKLOutput,
-#     _flatten_model_output,
-#     _unflatten_model_output,
-# )
+jax.tree_util.register_pytree_node(
+    diffusers_modeling_outputs.AutoencoderKLOutput,
+    _flatten_model_output,
+    _unflatten_model_output,
+)
 
 
-# def _flatten_diagonal_gaussian_distribution(
-#     obj: diffusers_vae.DiagonalGaussianDistribution,
-# ):
-#     return (obj.parameters, obj.deterministic), type(obj)
+def _flatten_diagonal_gaussian_distribution(
+    obj: diffusers_vae.DiagonalGaussianDistribution,
+):
+    return (
+        obj.parameters,
+        obj.mean,
+        obj.logvar,
+        obj.deterministic,
+        obj.std,
+        obj.var,
+    ), None
 
 
-# def _unflatten_diagonal_gaussian_distribution(
-#     aux, children
-# ) -> diffusers_vae.DiagonalGaussianDistribution:
-#     return aux(*children)
+def _unflatten_diagonal_gaussian_distribution(
+    aux, children
+) -> diffusers_vae.DiagonalGaussianDistribution:
+    obj = object.__new__(diffusers_vae.DiagonalGaussianDistribution)
+    obj.parameters = children[0]
+    obj.mean = children[1]
+    obj.logvar = children[2]
+    obj.deterministic = children[3]
+    obj.std = children[4]
+    obj.var = children[5]
+    return obj
 
 
-# jax.tree_util.register_pytree_node(
-#     diffusers_vae.DiagonalGaussianDistribution,
-#     _flatten_diagonal_gaussian_distribution,
-#     _unflatten_diagonal_gaussian_distribution,
-# )
+jax.tree_util.register_pytree_node(
+    diffusers_vae.DiagonalGaussianDistribution,
+    _flatten_diagonal_gaussian_distribution,
+    _unflatten_diagonal_gaussian_distribution,
+)
 
 
 class Args(argparse.Namespace):
@@ -606,11 +623,8 @@ def main(args: Args):
                 pipe.transformer_2.buffers, TRANSFORMER_SHARDINGS, mesh
             )
 
-        # TODO: jit encode function
         vae_options = torchax.CompileOptions(
-            # methods_to_compile=['encode', 'decode'],
-            methods_to_compile=["decode"],
-            # methods_to_compile=['_encode'],
+            methods_to_compile=["encode", "decode"],
             jax_jit_kwargs={"static_argnames": ("return_dict",)},
         )
         with perf_time("  Move vae"):
