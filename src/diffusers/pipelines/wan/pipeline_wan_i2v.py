@@ -724,6 +724,7 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         else:
             boundary_timestep = None
 
+        print("[WARNING] cache_context is not support")
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -752,27 +753,51 @@ class WanImageToVideoPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                     latent_model_input = torch.cat([latents, condition], dim=1).to(transformer_dtype)
                     timestep = t.expand(latents.shape[0])
 
-                with current_model.cache_context("cond"):
-                    noise_pred = current_model(
-                        hidden_states=latent_model_input,
-                        timestep=timestep,
-                        encoder_hidden_states=prompt_embeds,
-                        encoder_hidden_states_image=image_embeds,
-                        attention_kwargs=attention_kwargs,
-                        return_dict=False,
-                    )[0]
+                # with current_model.cache_context("cond"):
+                #     noise_pred = current_model(
+                #         hidden_states=latent_model_input,
+                #         timestep=timestep,
+                #         encoder_hidden_states=prompt_embeds,
+                #         encoder_hidden_states_image=image_embeds,
+                #         attention_kwargs=attention_kwargs,
+                #         return_dict=False,
+                #     )[0]
+
+                # if self.do_classifier_free_guidance:
+                #     with current_model.cache_context("uncond"):
+                #         noise_uncond = current_model(
+                #             hidden_states=latent_model_input,
+                #             timestep=timestep,
+                #             encoder_hidden_states=negative_prompt_embeds,
+                #             encoder_hidden_states_image=image_embeds,
+                #             attention_kwargs=attention_kwargs,
+                #             return_dict=False,
+                #         )[0]
+                #         noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
 
                 if self.do_classifier_free_guidance:
-                    with current_model.cache_context("uncond"):
-                        noise_uncond = current_model(
-                            hidden_states=latent_model_input,
-                            timestep=timestep,
-                            encoder_hidden_states=negative_prompt_embeds,
-                            encoder_hidden_states_image=image_embeds,
-                            attention_kwargs=attention_kwargs,
-                            return_dict=False,
-                        )[0]
-                        noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
+                    batch_latent_model_input = torch.cat([latent_model_input, latent_model_input])
+                    batch_timestep = torch.cat([timestep, timestep])
+                    batch_encoder_hidden_states = torch.cat([prompt_embeds, negative_prompt_embeds])
+                    batch_encoder_hidden_states_image = torch.cat([image_embeds, image_embeds]) if image_embeds is not None else None
+                else:
+                    batch_latent_model_input = latent_model_input
+                    batch_timestep = timestep
+                    batch_encoder_hidden_states = prompt_embeds
+                    batch_encoder_hidden_states_image = image_embeds
+
+                batch_noise = current_model(
+                    hidden_states=batch_latent_model_input,
+                    timestep=batch_timestep,
+                    encoder_hidden_states=batch_encoder_hidden_states,
+                    encoder_hidden_states_image=batch_encoder_hidden_states_image,
+                    attention_kwargs=attention_kwargs,
+                    return_dict=False,
+                )[0] # return is tuple
+                noise_pred = batch_noise[0:1]
+                if self.do_classifier_free_guidance:
+                    noise_uncond = batch_noise[1:2]
+                    noise_pred = noise_uncond + current_guidance_scale * (noise_pred - noise_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]

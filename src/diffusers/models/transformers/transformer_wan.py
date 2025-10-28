@@ -35,6 +35,10 @@ from ..normalization import FP32LayerNorm
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+import jax
+from torchax import interop
+from jax.sharding import PartitionSpec as P
+mark_sharding = interop.torch_view(jax.lax.with_sharding_constraint)
 
 def _get_qkv_projections(attn: "WanAttention", hidden_states: torch.Tensor, encoder_hidden_states: torch.Tensor):
     # encoder_hidden_states is only passed for cross-attention
@@ -623,6 +627,9 @@ class WanTransformer3DModel(
         return_dict: bool = True,
         attention_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+        hidden_states = mark_sharding(hidden_states, P("dp"))
+        encoder_hidden_states = mark_sharding(encoder_hidden_states, P("dp"))
+
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
             lora_scale = attention_kwargs.pop("scale", 1.0)
