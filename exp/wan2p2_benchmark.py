@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 
 import jax
+import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec as P
 from jax.sharding import Mesh
 from jax.experimental import mesh_utils
@@ -279,26 +280,25 @@ def _move_module(env, module):
 ### Flash Attention
 
 
+# Helper to pad to next multiple
+def pad_to_multiple(x, multiple, axis):
+    seq_len = x.shape[axis]
+    pad_len = (multiple - seq_len % multiple) % multiple
+    if pad_len == 0:
+        return x, seq_len
+    pad_width = [(0, 0)] * x.ndim
+    pad_width[axis] = (0, pad_len)
+    return jnp.pad(x, pad_width), seq_len
+
+
 def _tpu_custom_attention(query, key, value, mesh, scale=None):
     # The function that will be sharded across devices.
     def _attention_on_slices(q, k, v):
-        import jax.numpy as jnp
-
         # Scale the query tensor. This happens on each device with its slice of data.
         scale_factor = 1.0 / math.sqrt(q.shape[-1]) if scale is None else scale
         # fuse the ops of exp in softmax here
         _LOG2_E = 1.44269504
         q = q * scale_factor * _LOG2_E
-
-        # Helper to pad to next multiple
-        def pad_to_multiple(x, multiple, axis):
-            seq_len = x.shape[axis]
-            pad_len = (multiple - seq_len % multiple) % multiple
-            if pad_len == 0:
-                return x, seq_len
-            pad_width = [(0, 0)] * x.ndim
-            pad_width[axis] = (0, pad_len)
-            return jnp.pad(x, pad_width), seq_len
 
         # This function operates on a single item from the batch.
         def kernel_3d(q_3d, k_3d, v_3d):
@@ -352,24 +352,31 @@ def _tpu_custom_attention(query, key, value, mesh, scale=None):
     for d in remain_mesh_key:
         remain_devices_prod *= mesh.axis_sizes[mesh.axis_names.index(d)]
 
+    q_num_head = query.shape[1]
+    q_seq_len = query.shape[2]
+    kv_num_head = key.shape[1]
+    kv_seq_len = key.shape[2]
     # Sharded case for Transformer. Split along the heads axis.
     # Attn1 self attention, key length is long.
     if (
-        key.shape[2] > 10000
-        and key.shape[1] % remain_devices_prod == 0
+        kv_seq_len > 10000
+        and kv_num_head % remain_devices_prod == 0
+        and q_num_head % remain_devices_prod == 0
     ):
         print("[DEBUG] cp")
         q_partition_spec = P(dp_mesh_key, remain_mesh_key, None, None)
         kv_partition_spec = P(dp_mesh_key, remain_mesh_key, None, None)
-    elif query.shape[2] % remain_devices_prod == 0:
+    else:
         print("[DEBUG] sp")
+        if q_seq_len % remain_devices_prod != 0:
+            print(
+                f"[DEBUG] padding query for sp to be divided by {remain_devices_prod}"
+            )
+            query, _ = pad_to_multiple(query, remain_devices_prod, axis=2)
+
         # Attn2 which is cross attention, kv sequence is shorter. All gather the key value cost less.
         q_partition_spec = P(dp_mesh_key, None, remain_mesh_key, None)
         kv_partition_spec = P(dp_mesh_key, None, None, None)
-    else:
-        print("[DEBUG] replicate")
-        q_partition_spec = P(dp_mesh_key)
-        kv_partition_spec = P(dp_mesh_key)
 
     # ALWAYS use shard_map. The partition_spec will control the behavior.
     sharded_fn = jax.shard_map(
@@ -379,11 +386,21 @@ def _tpu_custom_attention(query, key, value, mesh, scale=None):
         out_specs=q_partition_spec,
         check_vma=False,
     )
-    query = jax.lax.with_sharding_constraint(query, P(dp_mesh_key, None, remain_mesh_key, None))
-    key = jax.lax.with_sharding_constraint(key, P(dp_mesh_key, None, remain_mesh_key, None))
-    value = jax.lax.with_sharding_constraint(value, P(dp_mesh_key, None, remain_mesh_key, None))
+    query = jax.lax.with_sharding_constraint(
+        query, P(dp_mesh_key, None, remain_mesh_key, None)
+    )
+    key = jax.lax.with_sharding_constraint(
+        key, P(dp_mesh_key, None, remain_mesh_key, None)
+    )
+    value = jax.lax.with_sharding_constraint(
+        value, P(dp_mesh_key, None, remain_mesh_key, None)
+    )
     out = sharded_fn(query, key, value)
-    out = jax.lax.with_sharding_constraint(out, P(dp_mesh_key, None, remain_mesh_key, None))
+    # Remove the potential padding for sp
+    out = out[:, :, :q_seq_len, :]
+    out = jax.lax.with_sharding_constraint(
+        out, P(dp_mesh_key, None, remain_mesh_key, None)
+    )
     return out
 
 
@@ -592,8 +609,10 @@ def main(args: Args):
     dp_dim = args.dp
     assert len(jax.devices()) % dp_dim == 0
     tp_dim = len(jax.devices()) // dp_dim
-    mesh_devices = mesh_utils.create_device_mesh((dp_dim, tp_dim), allow_split_physical_axes=True)
-    mesh = Mesh(mesh_devices, ('dp','tp'))
+    mesh_devices = mesh_utils.create_device_mesh(
+        (dp_dim, tp_dim), allow_split_physical_axes=True
+    )
+    mesh = Mesh(mesh_devices, ("dp", "tp"))
     print(f"{mesh=}")
 
     # Workaround override function to use tpu. Better handle it in torchax
