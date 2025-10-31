@@ -306,35 +306,19 @@ def _tpu_custom_attention(query, key, value, mesh, scale=None):
             kv_seq_len = k_3d.shape[1]
             num_heads_on_device = q_3d.shape[0]
 
-            # self attention
-            if k_3d.shape[1] > 10000:
-                # Pad q, k, v to next multiple of BQSIZE/BKVSIZE
-                q_3d_padded, q_orig_len = pad_to_multiple(q_3d, BQSIZE, axis=1)
-                k_3d_padded, k_orig_len = pad_to_multiple(k_3d, BKVSIZE, axis=1)
-                v_3d_padded, v_orig_len = pad_to_multiple(v_3d, BKVSIZE, axis=1)
-            else:
-                # do not padding on kv in cross attention. kv length is 512
-                q_3d_padded, q_orig_len = pad_to_multiple(q_3d, BQSIZE, axis=1)
-                k_3d_padded, k_orig_len = k_3d, k_3d.shape[1]
-                v_3d_padded, v_orig_len = v_3d, v_3d.shape[1]
-
-            padded_q_seq_len = q_3d_padded.shape[1]
-            padded_kv_seq_len = k_3d_padded.shape[1]
-
             block_sizes = splash_attention.BlockSizes(
-                block_q=min(BQSIZE, padded_q_seq_len),
-                block_kv=min(BKVSIZE, padded_kv_seq_len),
-                block_kv_compute=min(BKVCOMPUTESIZE, padded_kv_seq_len),
+                block_q=min(BQSIZE, q_seq_len),
+                block_kv=min(BKVSIZE, kv_seq_len),
+                block_kv_compute=min(BKVCOMPUTESIZE, kv_seq_len),
             )
             splash_kernel = custom_splash_attention.make_splash_mha(
                 block_sizes=block_sizes, bkv_compute_in=BKVCOMPUTEINSIZE
             )
-            out = splash_kernel(q_3d_padded, k_3d_padded, v_3d_padded).astype(
-                q_3d_padded.dtype
+            out = splash_kernel(q_3d, k_3d, v_3d).astype(
+                q_3d.dtype
             )
-            # Remove padding if any
             out = jnp.swapaxes(out, 1, 2)
-            return out[:, :q_orig_len, ...]
+            return out
 
         # Map the kernel over the batch dimension.
         vmapped_kernel = jax.vmap(kernel_3d, in_axes=(0, 0, 0), out_axes=0)

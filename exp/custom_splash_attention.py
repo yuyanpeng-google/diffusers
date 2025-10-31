@@ -68,6 +68,8 @@ def _flash_attention_kernel(
     bkv_compute: int,
     bkv_compute_in: int,
     head_dim_v: int,
+    q_seq_len: int,
+    kv_seq_len: int,
 ):
     float32 = jnp.float32
     head_dim_v_repeats, rem = divmod(head_dim_v, NUM_SUBLANES)
@@ -84,17 +86,18 @@ def _flash_attention_kernel(
         m_scratch_ref[...] = jnp.full_like(m_scratch_ref, mask_value)
         l_scratch_ref[...] = jnp.zeros_like(l_scratch_ref)
 
-    def body(kv_compute_index, _):
+    def compute_body(kv_compute_index, _):
         # # with jax.named_scope("qk"):
-        slice_k = pl.ds(kv_compute_index * bkv_compute, bkv_compute)
         m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
         assert m_prev.shape == (NUM_SUBLANES, bq)
         assert l_prev.shape == (NUM_SUBLANES, bq)
 
         q = q_ref[...]
+        slice_k_len = bkv_compute
+        slice_k = pl.ds(kv_compute_index * bkv_compute, slice_k_len)
         k = k_ref[slice_k, :]
         qk = lax.dot_general(k, q, NT_DIM_NUMBERS, preferred_element_type=float32)
-        assert qk.shape == (bkv_compute, bq)
+        assert qk.shape == (slice_k_len, bq)
 
         # with jax.named_scope("softmax_qkv"):
         o_prev = o_scratch_ref[:]
@@ -130,9 +133,74 @@ def _flash_attention_kernel(
         m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
         o_scratch_ref[:] = o_prev
 
-        ###
+    def last_compute_body(kv_compute_index):
+        # # with jax.named_scope("qk"):
+        m_prev, l_prev = m_scratch_ref[...], l_scratch_ref[...]
+        assert m_prev.shape == (NUM_SUBLANES, bq)
+        assert l_prev.shape == (NUM_SUBLANES, bq)
 
-    lax.fori_loop(0, (bkv // bkv_compute), body, None, unroll=True)
+        # We don't care about q padding since it doesn't matter and truncated afterward
+        # We care about kv padding
+        q = q_ref[...]
+        slice_k_len = kv_seq_len % bkv_compute
+        slice_k = pl.ds(kv_compute_index * bkv_compute, slice_k_len)
+        k = k_ref[slice_k, :]
+        qk = lax.dot_general(k, q, NT_DIM_NUMBERS, preferred_element_type=float32)
+        assert qk.shape == (slice_k_len, bq)
+
+        # with jax.named_scope("softmax_qkv"):
+        o_prev = o_scratch_ref[:]
+
+        v = v_ref[slice_k, :].astype(float32)
+
+        m_curr = qk.max(axis=0)[None, :]
+        assert m_curr.shape == (1, bq)
+
+        m_next = jnp.maximum(m_prev, m_curr)
+        assert m_next.shape == (NUM_SUBLANES, bq)
+
+        # the exp two ops: vmul and vpow. Fuse the vmul outside of kernel.
+        s_curr = exp2(qk - m_next[0:1])
+        # assert s_curr.shape == (bkv_compute, bq)
+
+        l_curr = s_curr.sum(axis=0, keepdims=True)
+        assert l_curr.shape == (1, bq)
+
+        alpha = jnp.exp2(m_prev - m_next)
+        l_next = l_curr + alpha * l_prev
+
+        sv_dims = (((0,), (0,)), ((), ()))
+        o_curr = lax.dot_general(v, s_curr, sv_dims)
+        alpha_o = alpha[0:1, ...]
+        o_prev = alpha_o * o_prev + o_curr
+
+        m_prev = m_next
+        l_prev = l_next
+
+        m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
+        o_scratch_ref[:] = o_prev
+
+
+        ###
+    assert bkv % bkv_compute == 0
+    @pl.when(j != grid_width - 1)
+    def body():
+        lax.fori_loop(0, (bkv // bkv_compute), compute_body, None, unroll=True)
+
+    @pl.when(j == grid_width - 1)
+    def last_body():
+        if kv_seq_len % bkv == 0:
+            iter_num = (bkv // bkv_compute)
+            lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
+        else:
+            # the last iter may contain padding. Separate the case
+            remain_kv_seq_len = kv_seq_len % bkv
+            iter_num = ((remain_kv_seq_len + bkv_compute - 1) // bkv_compute)
+            if remain_kv_seq_len % bkv_compute == 0:
+                lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
+            else:
+                lax.fori_loop(0, iter_num - 1, compute_body, None, unroll=True)
+                last_compute_body(iter_num-1)
 
     @pl.when(j == grid_width - 1)
     def end():
@@ -188,8 +256,10 @@ def __splash_attention_forward(
         pl.BlockSpec((head_dim_v, bq), lambda *_: (0, 0)),
         pl.BlockSpec((None, head_dim_v, bq), out_index_map),
     ]
-    grid_width = kv_seq_len // bkv
-    grid = (num_q_heads, q_seq_len // bq, grid_width)
+    # kv_seq_len and q_seq_len are not padding.
+    grid_width = (kv_seq_len + bkv - 1) // bkv
+    grid_height = (q_seq_len + bq - 1) // bq
+    grid = (num_q_heads, grid_height, grid_width)
 
     all_out = pl.pallas_call(
         partial(
@@ -201,6 +271,8 @@ def __splash_attention_forward(
             bkv_compute=bkv_compute,
             bkv_compute_in=bkv_compute_in,
             head_dim_v=head_dim_v,
+            q_seq_len=q_seq_len,
+            kv_seq_len=kv_seq_len,
         ),
         grid_spec=pltpu.PrefetchScalarGridSpec(
             num_scalar_prefetch=0,
