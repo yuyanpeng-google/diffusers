@@ -314,9 +314,7 @@ def _tpu_custom_attention(query, key, value, mesh, scale=None):
             splash_kernel = custom_splash_attention.make_splash_mha(
                 block_sizes=block_sizes, bkv_compute_in=BKVCOMPUTEINSIZE
             )
-            out = splash_kernel(q_3d, k_3d, v_3d).astype(
-                q_3d.dtype
-            )
+            out = splash_kernel(q_3d, k_3d, v_3d).astype(q_3d.dtype)
             out = jnp.swapaxes(out, 1, 2)
             return out
 
