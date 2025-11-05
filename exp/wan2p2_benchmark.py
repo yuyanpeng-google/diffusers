@@ -337,8 +337,8 @@ def _tpu_custom_attention(query, key, value, mesh, scale=None):
     q_seq_len = query.shape[2]
     kv_num_head = key.shape[1]
     kv_seq_len = key.shape[2]
-    # Sharded case for Transformer. Split along the heads axis.
     # Attn1 self attention, key length is long.
+    # Prevent reshard q while kv is short and gather fast
     if (
         kv_seq_len > 10000
         and kv_num_head % remain_devices_prod == 0
@@ -399,7 +399,11 @@ def _scaled_dot_product_attention(
     mesh,
 ) -> torch.Tensor:
     # if env.config.use_tpu_splash_attention:
-    if True:
+    # The kernel take times to compile and no significant gain with short key length.
+    # If key length short, prevent use it.
+    # Cross attention and vae have short key length.
+    # Workaround a magic number
+    if key.shape[2] > 20000:
         assert attn_mask is None
         assert dropout_p == 0.0
         assert is_causal is False
@@ -415,6 +419,7 @@ def _scaled_dot_product_attention(
         )
         return env.j2t_iso(res)
 
+    print(f"[DEBUG] use sdpa. {query.shape=}, {key.shape=}")
     return jtorch._sdpa_reference(
         query, key, value, attn_mask, dropout_p, is_causal, scale, enable_gqa
     )
