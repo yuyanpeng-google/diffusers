@@ -2,17 +2,22 @@
 
 1. Export the environment of GCP project
 * Fill the PROJECT_ID and TPU_NAME
+* Choose the DEVICE_COUNT: 8 or 16
+  * v6e-8 contains 1 worker, v6e-16 contains 4 workers
 ```
 ### 1. export env of gcp ###
+
+# Device count or tpu. Only support 8 or 16
+export DEVICE_COUNT=16 # 8
 
 export PROJECT_ID=<project_id>
 export TPU_NAME=<tpu_name>
 export ZONE=<zone>
-export ACCELERATOR_TYPE=v6e-16
+export ACCELERATOR_TYPE=v6e-${DEVICE_COUNT}
 export RUNTIME_VERSION=v2-alpha-tpuv6e
 ```
 
-2. Create the v6e-16 tpu vms on GCP
+2. Create the tpu vms on GCP
 ```
 gcloud compute tpus tpu-vm create ${TPU_NAME}  \
   --zone=${ZONE} \
@@ -91,9 +96,9 @@ run "${RUN_COMMAND}"
 ```
 ...
 output video done. 20251029_093753.mp4
-Warmup and output video:  1961.571311s
+Warmup and output video:  2047.249875s
 ...
-Benchmark:  103.959559s
+Benchmark:  94.497410s
 Done
 ```
 Notice that the first time warmup need to compile the graph which is time consuming.
@@ -143,7 +148,11 @@ python wan2p2_benchmark.py
 
 ```
 # python wan2p2_benchmark.py
-Benchmark:  103.959559s
-Done
+
+# v6e-8
+# Benchmark:  185.068082s
+
+# v6e-16
+# Benchmark:  94.497410s
 ```
 

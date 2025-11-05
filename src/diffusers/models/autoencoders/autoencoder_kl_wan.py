@@ -30,6 +30,8 @@ from .vae import DecoderOutput, DiagonalGaussianDistribution
 import jax
 from torchax import interop
 
+from jax.sharding import PartitionSpec as P
+mark_sharding = interop.torch_view(jax.lax.with_sharding_constraint)
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -175,6 +177,30 @@ class WanCausalConv3d(nn.Conv3d):
             x = torch.cat([cache_x, x], dim=2)
             padding[4] -= cache_x.shape[2]
         x = F.pad(x, padding)
+        # Sharding along height. Height should be divided by the device counts.
+        # Workaround sharding with name directly. Need to align the callers mesh.
+        # TODO: handle padding and calculate from mesh instead of try and not sharding
+        success = False
+        try:
+            x = mark_sharding(x, P(None, None, None, None, ("dp", "tp")))
+            success = True
+            print("[DEBUG] Shard conv height along ('dp', 'tp')")
+        except ValueError:
+            pass
+        if not success:
+            try:
+                x = mark_sharding(x, P(None, None, None, None, ("tp")))
+                success = True
+                print("[DEBUG] Shard conv height along ('tp')")
+            except ValueError:
+                pass
+        if not success:
+            try:
+                x = mark_sharding(x, P(None, None, None, None, ("dp")))
+                success = True
+                print("[DEBUG] Shard conv height along ('dp')")
+            except ValueError:
+                pass
         return super().forward(x)
 
 
@@ -911,6 +937,10 @@ class WanDecoder3d(nn.Module):
             feat_idx += 1
         else:
             x = self.conv_out(x)
+
+        # Replicate back to every devices, for the video processing after decode
+        # With multihost, if the data still in other host, there is non-addressable devices error.
+        x = mark_sharding(x, P())
         return x, feat_cache
 
 
