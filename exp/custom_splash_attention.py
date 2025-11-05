@@ -180,9 +180,10 @@ def _flash_attention_kernel(
         m_scratch_ref[...], l_scratch_ref[...] = m_next, l_next
         o_scratch_ref[:] = o_prev
 
-
         ###
+
     assert bkv % bkv_compute == 0
+
     @pl.when(j != grid_width - 1)
     def body():
         lax.fori_loop(0, (bkv // bkv_compute), compute_body, None, unroll=True)
@@ -190,17 +191,17 @@ def _flash_attention_kernel(
     @pl.when(j == grid_width - 1)
     def last_body():
         if kv_seq_len % bkv == 0:
-            iter_num = (bkv // bkv_compute)
+            iter_num = bkv // bkv_compute
             lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
         else:
             # the last iter may contain padding. Separate the case
             remain_kv_seq_len = kv_seq_len % bkv
-            iter_num = ((remain_kv_seq_len + bkv_compute - 1) // bkv_compute)
+            iter_num = (remain_kv_seq_len + bkv_compute - 1) // bkv_compute
             if remain_kv_seq_len % bkv_compute == 0:
                 lax.fori_loop(0, iter_num, compute_body, None, unroll=True)
             else:
                 lax.fori_loop(0, iter_num - 1, compute_body, None, unroll=True)
-                last_compute_body(iter_num-1)
+                last_compute_body(iter_num - 1)
 
     @pl.when(j == grid_width - 1)
     def end():

@@ -138,67 +138,66 @@ TRANSFORMER_SHARDINGS = {
 # 'rope.freqs_sin': (), # (torch.Size([1024, 128]), torch.float32)
 }
 
-VAE_SHARDINGS = {
-'encoder.conv_in.weight': (('dp','tp'),), # (torch.Size([96, 3, 3, 3, 3]), torch.bfloat16)
-'encoder.conv_in.bias': (('dp','tp'),), # (torch.Size([96]), torch.bfloat16)
-# 'encoder.down_blocks.*.norm1.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-'encoder.down_blocks.*.conv1.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-'encoder.down_blocks.*.conv1.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-# 'encoder.down_blocks.*.norm2.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-'encoder.down_blocks.*.conv2.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-'encoder.down_blocks.*.conv2.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-'encoder.down_blocks.*.resample.*.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3]), torch.bfloat16)
-'encoder.down_blocks.*.resample.*.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-'encoder.down_blocks.*.conv_shortcut.weight': (('dp','tp'),), # (torch.Size([384, 192, 1, 1, 1]), torch.bfloat16)
-'encoder.down_blocks.*.conv_shortcut.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-'encoder.down_blocks.*.time_conv.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 1, 1]), torch.bfloat16)
-'encoder.down_blocks.*.time_conv.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-# 'encoder.mid_block.attentions.*.norm.gamma': (), # (torch.Size([384, 1, 1]), torch.bfloat16)
-'encoder.mid_block.attentions.*.to_qkv.weight': (('dp','tp'),), # (torch.Size([1152, 384, 1, 1]), torch.bfloat16)
-'encoder.mid_block.attentions.*.to_qkv.bias': (('dp','tp'),), # (torch.Size([1152]), torch.bfloat16)
-'encoder.mid_block.attentions.*.proj.weight': (None, ('dp','tp'),), # (torch.Size([384, 384, 1, 1]), torch.bfloat16)
-# 'encoder.mid_block.attentions.*.proj.bias': (), # (torch.Size([384]), torch.bfloat16)
-# 'encoder.mid_block.resnets.*.norm1.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-'encoder.mid_block.resnets.*.conv1.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-'encoder.mid_block.resnets.*.conv1.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-# 'encoder.mid_block.resnets.*.norm2.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-'encoder.mid_block.resnets.*.conv2.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-'encoder.mid_block.resnets.*.conv2.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-# 'encoder.norm_out.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-'encoder.conv_out.weight': (None, ('dp','tp'),), # (torch.Size([32, 384, 3, 3, 3]), torch.bfloat16)
-# 'encoder.conv_out.bias': (), # (torch.Size([32]), torch.bfloat16)
-# 'quant_conv.weight': (), # (torch.Size([32, 32, 1, 1, 1]), torch.bfloat16)
-# 'quant_conv.bias': (), # (torch.Size([32]), torch.bfloat16)
-# 'post_quant_conv.weight': (), # (torch.Size([16, 16, 1, 1, 1]), torch.bfloat16)
-# 'post_quant_conv.bias': (), # (torch.Size([16]), torch.bfloat16)
-'decoder.conv_in.weight': (('dp','tp'),), # (torch.Size([384, 16, 3, 3, 3]), torch.bfloat16)
-'decoder.conv_in.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-# 'decoder.mid_block.attentions.*.norm.gamma': (), # (torch.Size([384, 1, 1]), torch.bfloat16)
-'decoder.mid_block.attentions.*.to_qkv.weight': (('dp','tp'),), # (torch.Size([1152, 384, 1, 1]), torch.bfloat16)
-'decoder.mid_block.attentions.*.to_qkv.bias': (('dp','tp'),), # (torch.Size([1152]), torch.bfloat16)
-'decoder.mid_block.attentions.*.proj.weight': (None, ('dp','tp'),), # (torch.Size([384, 384, 1, 1]), torch.bfloat16)
-# 'decoder.mid_block.attentions.*.proj.bias': (), # (torch.Size([384]), torch.bfloat16)
-# 'decoder.mid_block.resnets.*.norm1.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-'decoder.mid_block.resnets.*.conv1.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-'decoder.mid_block.resnets.*.conv1.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-# 'decoder.mid_block.resnets.*.norm2.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
-'decoder.mid_block.resnets.*.conv2.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
-'decoder.mid_block.resnets.*.conv2.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-# 'decoder.up_blocks.*.resnets.*.norm1.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
-'decoder.up_blocks.*.resnets.*.conv1.weight': (('dp','tp'),), # (torch.Size([96, 96, 3, 3, 3]), torch.bfloat16)
-'decoder.up_blocks.*.resnets.*.conv1.bias': (('dp','tp'),), # (torch.Size([96]), torch.bfloat16)
-# 'decoder.up_blocks.*.resnets.*.norm2.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
-'decoder.up_blocks.*.resnets.*.conv2.weight': (('dp','tp'),), # (torch.Size([96, 96, 3, 3, 3]), torch.bfloat16)
-'decoder.up_blocks.*.resnets.*.conv2.bias': (('dp','tp'),), # (torch.Size([96]), torch.bfloat16)
-'decoder.up_blocks.*.upsamplers.*.resample.*.weight': (('dp','tp'),), # (torch.Size([96, 192, 3, 3]), torch.bfloat16)
-'decoder.up_blocks.*.upsamplers.*.resample.*.bias': (('dp','tp'),), # (torch.Size([96]), torch.bfloat16)
-'decoder.up_blocks.*.upsamplers.*.time_conv.weight': (('dp','tp'),), # (torch.Size([768, 384, 3, 1, 1]), torch.bfloat16)
-'decoder.up_blocks.*.upsamplers.*.time_conv.bias': (('dp','tp'),), # (torch.Size([768]), torch.bfloat16)
-'decoder.up_blocks.*.resnets.*.conv_shortcut.weight': (('dp','tp'),), # (torch.Size([384, 192, 1, 1, 1]), torch.bfloat16)
-'decoder.up_blocks.*.resnets.*.conv_shortcut.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
-# 'decoder.norm_out.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
-'decoder.conv_out.weight': (None, ('dp','tp')), # (torch.Size([3, 96, 3, 3, 3]), torch.bfloat16)
-# 'decoder.conv_out.bias': (), # (torch.Size([3]), torch.bfloat16)
+VAE_ENCODER_SHARDINGS = {
+# 'conv_in.weight': (('dp','tp'),), # (torch.Size([96, 3, 3, 3, 3]), torch.bfloat16)
+# 'conv_in.bias': (('dp','tp'),), # (torch.Size([96]), torch.bfloat16)
+# # 'down_blocks.*.norm1.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
+# 'down_blocks.*.conv1.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+# 'down_blocks.*.conv1.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# # 'down_blocks.*.norm2.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
+# 'down_blocks.*.conv2.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+# 'down_blocks.*.conv2.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# 'down_blocks.*.resample.*.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3]), torch.bfloat16)
+# 'down_blocks.*.resample.*.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# 'down_blocks.*.conv_shortcut.weight': (('dp','tp'),), # (torch.Size([384, 192, 1, 1, 1]), torch.bfloat16)
+# 'down_blocks.*.conv_shortcut.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# 'down_blocks.*.time_conv.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 1, 1]), torch.bfloat16)
+# 'down_blocks.*.time_conv.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# # 'mid_block.attentions.*.norm.gamma': (), # (torch.Size([384, 1, 1]), torch.bfloat16)
+# 'mid_block.attentions.*.to_qkv.weight': (('dp','tp'),), # (torch.Size([1152, 384, 1, 1]), torch.bfloat16)
+# 'mid_block.attentions.*.to_qkv.bias': (('dp','tp'),), # (torch.Size([1152]), torch.bfloat16)
+# 'mid_block.attentions.*.proj.weight': (None, ('dp','tp'),), # (torch.Size([384, 384, 1, 1]), torch.bfloat16)
+# # 'mid_block.attentions.*.proj.bias': (), # (torch.Size([384]), torch.bfloat16)
+# # 'mid_block.resnets.*.norm1.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
+# 'mid_block.resnets.*.conv1.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+# 'mid_block.resnets.*.conv1.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# # 'mid_block.resnets.*.norm2.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
+# 'mid_block.resnets.*.conv2.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+# 'mid_block.resnets.*.conv2.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# # 'norm_out.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
+# 'conv_out.weight': (None, ('dp','tp'),), # (torch.Size([32, 384, 3, 3, 3]), torch.bfloat16)
+# # 'conv_out.bias': (), # (torch.Size([32]), torch.bfloat16)
+}
+
+VAE_DECODER_SHARDINGS = {
+# 'conv_in.weight': (('dp','tp'),), # (torch.Size([384, 16, 3, 3, 3]), torch.bfloat16)
+# 'conv_in.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# # 'mid_block.attentions.*.norm.gamma': (), # (torch.Size([384, 1, 1]), torch.bfloat16)
+# 'mid_block.attentions.*.to_qkv.weight': (('dp','tp'),), # (torch.Size([1152, 384, 1, 1]), torch.bfloat16)
+# 'mid_block.attentions.*.to_qkv.bias': (('dp','tp'),), # (torch.Size([1152]), torch.bfloat16)
+# 'mid_block.attentions.*.proj.weight': (None, ('dp','tp'),), # (torch.Size([384, 384, 1, 1]), torch.bfloat16)
+# # 'mid_block.attentions.*.proj.bias': (), # (torch.Size([384]), torch.bfloat16)
+# # 'mid_block.resnets.*.norm1.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
+# 'mid_block.resnets.*.conv1.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+# 'mid_block.resnets.*.conv1.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# # 'mid_block.resnets.*.norm2.gamma': (), # (torch.Size([384, 1, 1, 1]), torch.bfloat16)
+# 'mid_block.resnets.*.conv2.weight': (('dp','tp'),), # (torch.Size([384, 384, 3, 3, 3]), torch.bfloat16)
+# 'mid_block.resnets.*.conv2.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# # 'up_blocks.*.resnets.*.norm1.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
+# 'up_blocks.*.resnets.*.conv1.weight': (('dp','tp'),), # (torch.Size([96, 96, 3, 3, 3]), torch.bfloat16)
+# 'up_blocks.*.resnets.*.conv1.bias': (('dp','tp'),), # (torch.Size([96]), torch.bfloat16)
+# # 'up_blocks.*.resnets.*.norm2.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
+# 'up_blocks.*.resnets.*.conv2.weight': (('dp','tp'),), # (torch.Size([96, 96, 3, 3, 3]), torch.bfloat16)
+# 'up_blocks.*.resnets.*.conv2.bias': (('dp','tp'),), # (torch.Size([96]), torch.bfloat16)
+# 'up_blocks.*.upsamplers.*.resample.*.weight': (('dp','tp'),), # (torch.Size([96, 192, 3, 3]), torch.bfloat16)
+# 'up_blocks.*.upsamplers.*.resample.*.bias': (('dp','tp'),), # (torch.Size([96]), torch.bfloat16)
+# 'up_blocks.*.upsamplers.*.time_conv.weight': (('dp','tp'),), # (torch.Size([768, 384, 3, 1, 1]), torch.bfloat16)
+# 'up_blocks.*.upsamplers.*.time_conv.bias': (('dp','tp'),), # (torch.Size([768]), torch.bfloat16)
+# 'up_blocks.*.resnets.*.conv_shortcut.weight': (('dp','tp'),), # (torch.Size([384, 192, 1, 1, 1]), torch.bfloat16)
+# 'up_blocks.*.resnets.*.conv_shortcut.bias': (('dp','tp'),), # (torch.Size([384]), torch.bfloat16)
+# # 'norm_out.gamma': (), # (torch.Size([96, 1, 1, 1]), torch.bfloat16)
+# 'conv_out.weight': (None, ('dp','tp')), # (torch.Size([3, 96, 3, 3, 3]), torch.bfloat16)
+# # 'conv_out.bias': (), # (torch.Size([3]), torch.bfloat16)
 }
 # fmt: on
 
@@ -314,9 +313,7 @@ def _tpu_custom_attention(query, key, value, mesh, scale=None):
             splash_kernel = custom_splash_attention.make_splash_mha(
                 block_sizes=block_sizes, bkv_compute_in=BKVCOMPUTEINSIZE
             )
-            out = splash_kernel(q_3d, k_3d, v_3d).astype(
-                q_3d.dtype
-            )
+            out = splash_kernel(q_3d, k_3d, v_3d).astype(q_3d.dtype)
             out = jnp.swapaxes(out, 1, 2)
             return out
 
@@ -340,8 +337,8 @@ def _tpu_custom_attention(query, key, value, mesh, scale=None):
     q_seq_len = query.shape[2]
     kv_num_head = key.shape[1]
     kv_seq_len = key.shape[2]
-    # Sharded case for Transformer. Split along the heads axis.
     # Attn1 self attention, key length is long.
+    # Prevent reshard q while kv is short and gather fast
     if (
         kv_seq_len > 10000
         and kv_num_head % remain_devices_prod == 0
@@ -402,7 +399,11 @@ def _scaled_dot_product_attention(
     mesh,
 ) -> torch.Tensor:
     # if env.config.use_tpu_splash_attention:
-    if True:
+    # The kernel take times to compile and no significant gain with short key length.
+    # If key length short, prevent use it.
+    # Cross attention and vae have short key length.
+    # Workaround a magic number
+    if key.shape[2] > 20000:
         assert attn_mask is None
         assert dropout_p == 0.0
         assert is_causal is False
@@ -418,6 +419,7 @@ def _scaled_dot_product_attention(
         )
         return env.j2t_iso(res)
 
+    print(f"[DEBUG] use sdpa. {query.shape=}, {key.shape=}")
     return jtorch._sdpa_reference(
         query, key, value, attn_mask, dropout_p, is_causal, scale, enable_gqa
     )
@@ -580,8 +582,11 @@ def main(args: Args):
         print("transformer_shardings = ", end="")
         _print_weights(pipe.transformer)
         print()
-        print("vae_shardings = ", end="")
-        _print_weights(pipe.vae)
+        print("vae_encoder_shardings = ", end="")
+        _print_weights(pipe.vae.encoder)
+        print()
+        print("vae_decoder_shardings = ", end="")
+        _print_weights(pipe.vae.decoder)
         print()
 
     # enable torchax wrap jax array into torch array
@@ -647,15 +652,18 @@ def main(args: Args):
                 pipe.transformer_2.buffers, TRANSFORMER_SHARDINGS, mesh
             )
 
-        vae_options = torchax.CompileOptions(
-            methods_to_compile=["encode", "decode"],
-            jax_jit_kwargs={"static_argnames": ("return_dict",)},
-        )
         with perf_time("  Move vae"):
+            # the entire vae
             _move_module(env, pipe.vae)
-            pipe.vae = torchax.compile(pipe.vae, vae_options)
-            pipe.vae.params = _shard_weight_dict(pipe.vae.params, VAE_SHARDINGS, mesh)
-            pipe.vae.buffers = _shard_weight_dict(pipe.vae.buffers, VAE_SHARDINGS, mesh)
+
+            # compile only encoder and decoder
+            pipe.vae.encoder = torchax.compile(pipe.vae.encoder)
+            pipe.vae.encoder.params = _shard_weight_dict(pipe.vae.encoder.params, VAE_ENCODER_SHARDINGS, mesh)
+            pipe.vae.encoder.buffers = _shard_weight_dict(pipe.vae.encoder.buffers, VAE_ENCODER_SHARDINGS, mesh)
+
+            pipe.vae.decoder = torchax.compile(pipe.vae.decoder)
+            pipe.vae.decoder.params = _shard_weight_dict(pipe.vae.decoder.params, VAE_DECODER_SHARDINGS, mesh)
+            pipe.vae.decoder.buffers = _shard_weight_dict(pipe.vae.decoder.buffers, VAE_DECODER_SHARDINGS, mesh)
 
     image = load_image(args.image)
     max_area = MAX_AREA_CONFIGS[args.size]
